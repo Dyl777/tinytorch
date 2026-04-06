@@ -1,18 +1,4 @@
-# TinyTorch GPU Backend Guide
-
-## Overview
-
-TinyTorch supports **three GPU backends** for hardware-accelerated tensor operations:
-
-| Backend | GPU Support | Performance | Setup Complexity |
-|---------|-------------|-------------|------------------|
-| **OpenCL** | All GPUs (NVIDIA, Intel, AMD) | Good | Medium |
-| **CUDA** | NVIDIA only | Best | High |
-| **OpenGL** | All GPUs (one at a time) | Moderate | Low |
-
-The system automatically detects and selects the best available GPU, but you can override this behavior.
-
----
+# TinyTorch GPU Backend - Technical Guide
 
 ## Quick Start
 
@@ -63,47 +49,407 @@ g++ -std=c++17 -DTINYTORCH_USE_OPENCL_SDK \
     your_code.cpp -lopengl32 -lgdi32
 ```
 
----
 
-## GPU Selection Behavior
+## Architecture Support Matrix
 
-### Auto-Selection Logic
-
-The `UnifiedGpuSelector::auto_select()` method uses this priority:
-
-1. **NVIDIA discrete GPUs** (via OpenCL native driver)
-2. **AMD discrete GPUs**
-3. **Highest scoring GPU** (based on compute units, memory, driver type)
-
-### Scoring System
-
-Each GPU receives a score based on:
-- **Compute units**: `units * 10.0`
-- **Memory**: `GB * 5.0`
-- **Native NVIDIA driver**: `+100.0`
-- **Native Intel driver**: `+50.0`
-- **Discrete GPU (NVIDIA/AMD)**: `+50.0`
-- **Microsoft OpenCLOn12 wrapper**: `-20.0`
-
-**Example scores for a typical laptop:**
-```
-#0: Intel UHD 620 (Intel driver)     → 321.7 points
-#1: NVIDIA MX130 (NVIDIA CUDA)       → 189.9 points ← Selected (discrete)
-#2: Intel UHD 620 (Microsoft D3D12)  →  29.6 points
-#3: NVIDIA MX130 (Microsoft D3D12)   →  -0.2 points
-```
+| GPU Architecture | Compute Capability | OpenGL 4.3+ | OpenCL 1.2+ | CUDA | Notes |
+|-----------------|-------------------|-------------|-------------|------|-------|
+| **NVIDIA Maxwell** (GTX 750-980, MX130) | 5.0-5.2 | Yes | Yes | Yes | See Maxwell-specific issues below |
+| **NVIDIA Pascal** (GTX 10xx) | 6.0-6.1 | Yes | Yes | Yes | Full support |
+| **NVIDIA Turing** (RTX 20xx, MX450) | 7.5 | Yes | Yes | Yes | Full support |
+| **NVIDIA Ampere** (RTX 30xx) | 8.0-8.6 | Yes | Yes | Yes | Full support |
+| **Intel HD 500-600** | N/A | Yes | Yes | No | Limited OpenCL performance |
+| **Intel UHD 600-700** | N/A | Yes | Yes | No | Better OpenCL via Intel driver |
+| **Intel Iris Xe** | N/A | Yes | Yes | No | Good OpenCL performance |
+| **AMD GCN 1.0-3.0** | N/A | Yes | Yes | No | OpenCL via AMD driver |
+| **AMD RDNA 1-3** | N/A | Yes | Yes | No | Best OpenCL support |
 
 ---
 
-## Making Specific GPUs Appear
+## Maxwell Architecture (Compute 5.0) Specific Issues
 
-### Problem: Only Intel GPU Shows Up
+### OpenGL Compute Shader Limitations
 
-**Cause**: Windows defaults to the integrated GPU for OpenGL applications.
+The NVIDIA GeForce MX130 uses the **Maxwell GM108** chip (Compute Capability 5.0). While it supports OpenGL 4.6, there are several quirks:
 
-**Solution**: The `NvOptimusEnablement` export forces NVIDIA GPU usage for OpenGL:
+#### 1. SSBO Size Limitations
+- **Max SSBO size**: ~1.9GB (limited by 2GB VRAM)
+- **Max work group size**: 1024 threads (not 1536 like Pascal+)
+- **Shared memory**: 48KB per block (less than Pascal's 64KB)
 
+**Workaround**: Use smaller batch sizes for large tensors:
 ```cpp
+// In gpu_kernels.h
+size_t global = ((n + 255) / 256) * 256;  // Use 256, not 512
+size_t local = 256;  // Maxwell max is 1024, but 256 is safer
+```
+
+#### 2. Atomic Operations
+- `atomic_add` for floats is **not supported** in OpenCL 1.2 on Maxwell
+- `atomic_cmpxchg` works but is slow
+
+**Workaround**: Use multi-pass reduction instead of atomics:
+```c
+// Instead of atomic_add(out, value):
+// Pass 1: Each work group writes partial sum to buffer
+// Pass 2: CPU sums the partial results
+```
+
+#### 3. OpenCL Driver Issues
+- NVIDIA's OpenCL driver for Maxwell reports **CL_DEVICE_MAX_COMPUTE_UNITS = 3** (actual SM count)
+- Intel's OpenCL driver reports **24 CUs** for UHD 620 (EU count)
+- **Don't compare CU counts across vendors** - they mean different things
+
+#### 4. NvOptimusEnablement
+On laptops with dual GPUs (Intel + NVIDIA), OpenGL defaults to Intel. The export:
+```cpp
+extern "C" {
+    __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+}
+```
+**Must be in the main executable**, not a DLL. If placed in a shared library, it won't work.
+
+#### 5. Memory Alignment
+Maxwell requires **16-byte alignment** for SSBOs. Unaligned access causes silent corruption.
+
+**Fix**: Always allocate buffers with padding:
+```cpp
+size_t aligned_size = ((n * sizeof(float) + 15) / 16) * 16;
+cl_mem buf = clCreateBuffer(context, CL_MEM_READ_WRITE, aligned_size, nullptr, &err);
+```
+
+---
+
+## Known Issues and Workarounds
+
+### Issue 1: `clCreateCommandQueue` Deprecated in OpenCL 2.0+
+
+**Error**: `warning: '_cl_command_queue* clCreateCommandQueue(...)' is deprecated`
+
+**Fix**: Use `clCreateCommandQueueWithProperties` for OpenCL 2.0+:
+```cpp
+#ifdef CL_VERSION_2_0
+    cl_command_queue queue = clCreateCommandQueueWithProperties(context, device, nullptr, &err);
+#else
+    cl_command_queue queue = clCreateCommandQueue(context, device, 0, &err);
+#endif
+```
+
+### Issue 2: CUDA DLL Not Found
+
+**Error**: `[CudaManager] CUDA runtime not found`
+
+**Cause**: Code was looking for `cudart64_110.dll` but CUDA 12.8 uses `cudart64_12.dll`.
+
+**Fix**: Updated DLL search order in `gpu_backends.h`:
+```cpp
+_cuda_lib = LoadLibraryA("cudart64_12.dll");  // CUDA 12.x
+if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_11.dll");  // CUDA 11.x
+if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_10.dll");  // CUDA 10.x
+// ... etc
+```
+
+### Issue 3: Microsoft OpenCLOn12 Performance
+
+**Symptom**: Intel/AMD GPUs via Microsoft's D3D12 translation layer are **10-50x slower** than native drivers.
+
+**Cause**: OpenCLOn12 translates OpenCL calls to Direct3D 12, adding overhead.
+
+**Fix**: Install native drivers:
+- **Intel**: [Intel OpenCL HD Graphics Driver](https://www.intel.com/content/www/us/en/download/785597/intel-opencl-graphics-driver.html)
+- **AMD**: [AMD Adrenalin](https://www.amd.com/en/support)
+
+The scoring system automatically penalizes OpenCLOn12:
+```cpp
+if (platform_lower.find("openclon12") != std::string::npos) {
+    info.compute_score -= 20.0;  // Penalty
+}
+```
+
+### Issue 4: `std::vector` Size Limit on 32-bit
+
+**Error**: `terminate called after throwing an instance of 'std::length_error'`
+**what()**: `cannot create std::vector larger than max_size()`
+
+**Cause**: On 32-bit systems, `std::vector` is limited to ~2GB.
+
+**Fix**: Use streaming/chunked processing for large tensors:
+```cpp
+// Process in chunks of 100M elements
+size_t chunk_size = 100000000;
+for (size_t offset = 0; offset < n; offset += chunk_size) {
+    size_t count = std::min(chunk_size, n - offset);
+    // Process chunk...
+}
+```
+
+### Issue 5: OpenGL Function Pointer Loading on Windows
+
+**Warning**: `cast between incompatible function types from 'PROC' to 'PFNGLGENBUFFERSPROC'`
+
+**Cause**: `wglGetProcAddress` returns `PROC` (generic function pointer), but we cast to specific types.
+
+**Status**: **Harmless warning**. This is standard practice for OpenGL extension loading. The cast is safe because all OpenGL function pointers have the same calling convention on Windows.
+
+**Suppress**: Add `-Wno-cast-function-type` to compiler flags.
+
+---
+
+## Installation Scripts
+
+### Linux: Auto-Detect and Install GPU Drivers
+
+```bash
+#!/bin/bash
+# gpu_setup_linux.sh - Detect and install GPU drivers on Linux
+
+set -e
+
+echo "=== TinyTorch GPU Setup (Linux) ==="
+
+# Detect GPU
+GPU_VENDOR=$(lspci | grep -i -E 'vga|3d|display' | grep -oiE 'nvidia|amd|intel' | head -1 | tr '[:upper:]' '[:lower:]')
+
+if [ -z "$GPU_VENDOR" ]; then
+    echo "ERROR: No GPU detected"
+    exit 1
+fi
+
+echo "Detected GPU vendor: $GPU_VENDOR"
+
+case $GPU_VENDOR in
+    nvidia)
+        echo "Installing NVIDIA drivers..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y nvidia-driver-535 nvidia-cuda-toolkit opencl-headers
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y akmod-nvidia xorg-x11-drv-nvidia-cuda
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -S nvidia nvidia-utils cuda opencl-headers
+        fi
+        
+        # Verify
+        nvidia-smi
+        nvcc --version
+        ;;
+    amd)
+        echo "Installing AMD drivers..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y mesa-opencl-icd ocl-icd-opencl-dev opencl-headers
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y ocl-icd ocl-icd-devel
+        fi
+        
+        # Verify
+        clinfo | head -20
+        ;;
+    intel)
+        echo "Installing Intel OpenCL runtime..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y intel-opencl-icd ocl-icd-opencl-dev opencl-headers
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y intel-opencl
+        fi
+        
+        # Verify
+        clinfo | head -20
+        ;;
+esac
+
+# Install build dependencies
+echo "Installing build dependencies..."
+if command -v apt-get &> /dev/null; then
+    sudo apt-get install -y build-essential cmake git libgl1-mesa-dev
+elif command -v dnf &> /dev/null; then
+    sudo dnf groupinstall -y "Development Tools"
+    sudo dnf install -y cmake git mesa-libGL-devel
+fi
+
+echo "=== Setup Complete ==="
+echo "Run: cd tinytorch && ./build.sh"
+```
+
+### Windows: Auto-Detect and Install GPU Drivers (PowerShell)
+
+```powershell
+# gpu_setup_windows.ps1 - Detect and guide GPU driver installation on Windows
+
+Write-Host "=== TinyTorch GPU Setup (Windows) ===" -ForegroundColor Cyan
+
+# Detect GPU
+$gpu = Get-PnpDevice -Class Display | Where-Object { $_.Status -eq 'OK' } | Select-Object -First 1
+
+if (-not $gpu) {
+    Write-Host "ERROR: No GPU detected" -ForegroundColor Red
+    exit 1
+}
+
+$gpuName = $gpu.FriendlyName
+Write-Host "Detected GPU: $gpuName" -ForegroundColor Green
+
+# Check for NVIDIA
+if ($gpuName -match 'NVIDIA|GeForce|Quadro|Tesla') {
+    Write-Host "NVIDIA GPU detected" -ForegroundColor Yellow
+    
+    # Check if CUDA is installed
+    $cudaPath = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -ErrorAction SilentlyContinue
+    if ($cudaPath) {
+        Write-Host "CUDA found: $($cudaPath.Name)" -ForegroundColor Green
+        nvcc --version
+    } else {
+        Write-Host "CUDA not found. Download from:" -ForegroundColor Yellow
+        Write-Host "  https://developer.nvidia.com/cuda-downloads" -ForegroundColor White
+    }
+    
+    # Check OpenCL
+    $openclDll = Get-ChildItem "C:\Windows\System32\nvcuda.dll" -ErrorAction SilentlyContinue
+    if ($openclDll) {
+        Write-Host "OpenCL (NVIDIA) found" -ForegroundColor Green
+    } else {
+        Write-Host "OpenCL not found. Update NVIDIA driver:" -ForegroundColor Yellow
+        Write-Host "  https://www.nvidia.com/Download/index.aspx" -ForegroundColor White
+    }
+}
+# Check for Intel
+elseif ($gpuName -match 'Intel|UHD|Iris|HD Graphics') {
+    Write-Host "Intel GPU detected" -ForegroundColor Yellow
+    
+    # Check OpenCL
+    $intelOpenCL = Get-ChildItem "C:\Windows\System32\IntelOpenCL64.dll" -ErrorAction SilentlyContinue
+    if ($intelOpenCL) {
+        Write-Host "Intel OpenCL found" -ForegroundColor Green
+    } else {
+        Write-Host "Intel OpenCL not found. Install from:" -ForegroundColor Yellow
+        Write-Host "  https://www.intel.com/content/www/us/en/download/785597/intel-opencl-graphics-driver.html" -ForegroundColor White
+    }
+}
+# Check for AMD
+elseif ($gpuName -match 'AMD|Radeon') {
+    Write-Host "AMD GPU detected" -ForegroundColor Yellow
+    
+    # Check OpenCL
+    $amdOpenCL = Get-ChildItem "C:\Windows\System32\amdocl64.dll" -ErrorAction SilentlyContinue
+    if ($amdOpenCL) {
+        Write-Host "AMD OpenCL found" -ForegroundColor Green
+    } else {
+        Write-Host "AMD OpenCL not found. Install Adrenalin driver:" -ForegroundColor Yellow
+        Write-Host "  https://www.amd.com/en/support" -ForegroundColor White
+    }
+}
+
+# Check for OpenCL SDK
+$openclSdk = Test-Path "$env:USERPROFILE\OpenCL-SDK\install\bin\OpenCL.dll"
+if ($openclSdk) {
+    Write-Host "OpenCL SDK found" -ForegroundColor Green
+} else {
+    Write-Host "OpenCL SDK not found. Build from source:" -ForegroundColor Yellow
+    Write-Host "  git clone --recursive https://github.com/KhronosGroup/OpenCL-SDK.git" -ForegroundColor White
+    Write-Host "  cd OpenCL-SDK" -ForegroundColor White
+    Write-Host "  cmake -G 'Visual Studio 17 2022' -A x64 -B build -S ." -ForegroundColor White
+    Write-Host "  cmake --build build --config Release --target install" -ForegroundColor White
+}
+
+Write-Host "`n=== Setup Complete ===" -ForegroundColor Cyan
+```
+
+### Cross-Platform: Verify GPU Setup
+
+```bash
+#!/bin/bash
+# verify_gpu.sh - Verify all GPU backends are working
+
+echo "=== GPU Backend Verification ==="
+
+# Check OpenGL
+echo -n "OpenGL: "
+if command -v glxinfo &> /dev/null; then
+    glxinfo | grep "OpenGL version" | head -1
+elif command -v nvidia-smi &> /dev/null; then
+    echo "Available (via nvidia-smi)"
+else
+    echo "Not found"
+fi
+
+# Check OpenCL
+echo -n "OpenCL: "
+if command -v clinfo &> /dev/null; then
+    clinfo | grep "Device Name" | head -5
+else
+    echo "clinfo not installed"
+fi
+
+# Check CUDA
+echo -n "CUDA: "
+if command -v nvcc &> /dev/null; then
+    nvcc --version | grep "release"
+else
+    echo "Not found"
+fi
+
+# Check NVIDIA driver
+echo -n "NVIDIA Driver: "
+if command -v nvidia-smi &> /dev/null; then
+    nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+else
+    echo "Not found"
+fi
+
+echo "=== Done ==="
+```
+
+### Build Script for TinyTorch with GPU Support
+
+```bash
+#!/bin/bash
+# build.sh - Build TinyTorch with GPU support
+
+set -e
+
+echo "=== Building TinyTorch ==="
+
+# Detect OpenCL SDK
+OPENCL_SDK="$HOME/OpenCL-SDK/install"
+USE_OPENCL_SDK=""
+OPENCL_INCLUDE=""
+OPENCL_LIB=""
+
+if [ -d "$OPENCL_SDK" ]; then
+    echo "Found OpenCL SDK at: $OPENCL_SDK"
+    USE_OPENCL_SDK="-DTINYTORCH_USE_OPENCL_SDK"
+    OPENCL_INCLUDE="-I$OPENCL_SDK/include"
+    OPENCL_LIB="-L$OPENCL_SDK/lib -lOpenCL"
+else
+    echo "OpenCL SDK not found, using dynamic loading"
+    OPENCL_LIB="-lOpenCL"
+fi
+
+# Compiler
+CXX="g++"
+CXXFLAGS="-std=c++17 -Wall -Wextra -O2"
+LDFLAGS="-lopengl32 -lgdi32 $OPENCL_LIB"
+
+# Build GPU backend tests
+echo "Building GPU backends test..."
+$CXX $CXXFLAGS $USE_OPENCL_SDK $OPENCL_INCLUDE \
+    -o gpu_backends_test tinytorch/gpu_backends_test.cpp \
+    $LDFLAGS
+
+echo "Building GPU kernel tests..."
+$CXX $CXXFLAGS $USE_OPENCL_SDK $OPENCL_INCLUDE \
+    -o gpu_kernel_test tinytorch/gpu_kernel_test.cpp \
+    $LDFLAGS
+
+echo "=== Build Complete ==="
+echo "Run tests:"
+echo "  ./gpu_backends_test"
+echo "  ./gpu_kernel_test"
+```
+
+---
+
 // In gpu_backends.h (already included)
 extern "C" {
     __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
@@ -274,9 +620,66 @@ if (vendor_lower.find("nvidia") != std::string::npos) {
     info.compute_score += 50.0;
     info.is_nvidia = true;
 }
-```
+
+## Performance Benchmarks
+
+### Element-wise Operations (100K elements, float32)
+
+| Operation | MX130 (OpenCL) | UHD 620 (OpenCL) | MX130 (OpenCLOn12) | Speedup |
+|-----------|---------------|------------------|-------------------|---------|
+| add | 13ms | 1078ms | 64ms | **83x** |
+| sub | 4ms | 1372ms | 28ms | **343x** |
+| mul | 0ms | 655ms | 17ms | **∞** |
+| div | 15ms | 903ms | 32ms | **60x** |
+| add_scalar | 5ms | 1001ms | 32ms | **200x** |
+| negate | 5ms | 897ms | 27ms | **179x** |
+| abs | 5ms | 1080ms | 24ms | **216x** |
+| clamp | 7ms | 1152ms | 30ms | **164x** |
+
+**Key insight**: Native NVIDIA driver is **50-300x faster** than Intel iGPU and **2-5x faster** than Microsoft's OpenCLOn12 wrapper.
+
+### Reduction Operations (100K elements)
+
+| Operation | MX130 | UHD 620 | Notes |
+|-----------|-------|---------|-------|
+| sum | 4.6ms | 1.8ms | CPU fallback (fast enough) |
+| mean | 1.2ms | 0ms | CPU fallback |
+| max | 2.9ms | 1.5ms | CPU fallback |
+| min | 0ms | 0ms | CPU fallback |
+| dot | 2.2ms | 0.9ms | CPU fallback |
+
+**Note**: Reductions currently use CPU fallback for accuracy. GPU reduction kernels exist but require multi-pass implementation for Maxwell due to lack of float atomics.
 
 ---
+
+## Troubleshooting Flowchart
+
+```
+GPU not detected?
+├── Check driver installed
+│   ├── NVIDIA: nvidia-smi
+│   ├── Intel: clinfo | grep Intel
+│   └── AMD: clinfo | grep AMD
+├── Check OpenCL runtime
+│   ├── Windows: C:\Windows\System32\OpenCL.dll
+│   └── Linux: /etc/OpenCL/vendors/
+└── Check NvOptimusEnablement export
+    └── Must be in main executable, not DLL
+
+CUDA not found?
+├── Check CUDA Toolkit installed
+│   └── nvcc --version
+├── Check PATH includes CUDA bin directory
+│   └── C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\bin
+└── Check cudart64_*.dll exists
+    └── Try all versions: 12, 11, 10, 9, 8
+
+OpenCL kernel compilation fails?
+├── Check OpenCL version: clGetDeviceInfo(CL_DEVICE_OPENCL_C_VERSION)
+├── Maxwell: Use OpenCL 1.2 features only
+├── Check for float atomics (not supported on Maxwell)
+└── Check work group size (max 1024 on Maxwell)
+```
 
 ## Troubleshooting
 
