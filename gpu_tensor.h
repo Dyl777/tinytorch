@@ -750,13 +750,13 @@ struct GpuConfig {
 static const char* SHADER_ADD = R"(
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) buffer InputA { float data[]; };
-layout(std430, binding = 1) buffer InputB { float data[]; };
-layout(std430, binding = 2) buffer Output { float data[]; };
+layout(std430, binding = 0) buffer InputA { float a_data[]; };
+layout(std430, binding = 1) buffer InputB { float b_data[]; };
+layout(std430, binding = 2) buffer Output { float out_data[]; };
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx < data.length()) {
-        Output.data[idx] = InputA.data[idx] + InputB.data[idx];
+    if (idx < a_data.length()) {
+        out_data[idx] = a_data[idx] + b_data[idx];
     }
 }
 )";
@@ -764,13 +764,13 @@ void main() {
 static const char* SHADER_SUBTRACT = R"(
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) buffer InputA { float data[]; };
-layout(std430, binding = 1) buffer InputB { float data[]; };
-layout(std430, binding = 2) buffer Output { float data[]; };
+layout(std430, binding = 0) buffer InputA { float a_data[]; };
+layout(std430, binding = 1) buffer InputB { float b_data[]; };
+layout(std430, binding = 2) buffer Output { float out_data[]; };
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx < data.length()) {
-        Output.data[idx] = InputA.data[idx] - InputB.data[idx];
+    if (idx < a_data.length()) {
+        out_data[idx] = a_data[idx] - b_data[idx];
     }
 }
 )";
@@ -778,13 +778,13 @@ void main() {
 static const char* SHADER_MULTIPLY = R"(
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) buffer InputA { float data[]; };
-layout(std430, binding = 1) buffer InputB { float data[]; };
-layout(std430, binding = 2) buffer Output { float data[]; };
+layout(std430, binding = 0) buffer InputA { float a_data[]; };
+layout(std430, binding = 1) buffer InputB { float b_data[]; };
+layout(std430, binding = 2) buffer Output { float out_data[]; };
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx < data.length()) {
-        Output.data[idx] = InputA.data[idx] * InputB.data[idx];
+    if (idx < a_data.length()) {
+        out_data[idx] = a_data[idx] * b_data[idx];
     }
 }
 )";
@@ -792,13 +792,13 @@ void main() {
 static const char* SHADER_DIVIDE = R"(
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) buffer InputA { float data[]; };
-layout(std430, binding = 1) buffer InputB { float data[]; };
-layout(std430, binding = 2) buffer Output { float data[]; };
+layout(std430, binding = 0) buffer InputA { float a_data[]; };
+layout(std430, binding = 1) buffer InputB { float b_data[]; };
+layout(std430, binding = 2) buffer Output { float out_data[]; };
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx < data.length()) {
-        Output.data[idx] = InputA.data[idx] / InputB.data[idx];
+    if (idx < a_data.length()) {
+        out_data[idx] = a_data[idx] / b_data[idx];
     }
 }
 )";
@@ -806,13 +806,13 @@ void main() {
 static const char* SHADER_ADD_SCALAR = R"(
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) buffer Input { float data[]; };
-layout(std430, binding = 1) buffer Output { float data[]; };
+layout(std430, binding = 0) buffer Input { float in_data[]; };
+layout(std430, binding = 1) buffer Output { float out_data[]; };
 uniform float scalar;
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx < data.length()) {
-        Output.data[idx] = Input.data[idx] + scalar;
+    if (idx < in_data.length()) {
+        out_data[idx] = in_data[idx] + scalar;
     }
 }
 )";
@@ -820,13 +820,13 @@ void main() {
 static const char* SHADER_MULTIPLY_SCALAR = R"(
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) buffer Input { float data[]; };
-layout(std430, binding = 1) buffer Output { float data[]; };
+layout(std430, binding = 0) buffer Input { float in_data[]; };
+layout(std430, binding = 1) buffer Output { float out_data[]; };
 uniform float scalar;
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx < data.length()) {
-        Output.data[idx] = Input.data[idx] * scalar;
+    if (idx < in_data.length()) {
+        out_data[idx] = in_data[idx] * scalar;
     }
 }
 )";
@@ -834,12 +834,12 @@ void main() {
 static const char* SHADER_NEGATE = R"(
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) buffer Input { float data[]; };
-layout(std430, binding = 1) buffer Output { float data[]; };
+layout(std430, binding = 0) buffer Input { float in_data[]; };
+layout(std430, binding = 1) buffer Output { float out_data[]; };
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx < data.length()) {
-        Output.data[idx] = -Input.data[idx];
+    if (idx < in_data.length()) {
+        out_data[idx] = -in_data[idx];
     }
 }
 )";
@@ -847,12 +847,12 @@ void main() {
 static const char* SHADER_ABS = R"(
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) buffer Input { float data[]; };
-layout(std430, binding = 1) buffer Output { float data[]; };
+layout(std430, binding = 0) buffer Input { float in_data[]; };
+layout(std430, binding = 1) buffer Output { float out_data[]; };
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx < data.length()) {
-        Output.data[idx] = abs(Input.data[idx]);
+    if (idx < in_data.length()) {
+        out_data[idx] = abs(in_data[idx]);
     }
 }
 )";
@@ -860,15 +860,15 @@ void main() {
 static const char* SHADER_CLAMP = R"(
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) buffer Input { float data[]; };
-layout(std430, binding = 1) buffer Output { float data[]; };
+layout(std430, binding = 0) buffer Input { float in_data[]; };
+layout(std430, binding = 1) buffer Output { float out_data[]; };
 uniform float min_val;
 uniform float max_val;
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx < data.length()) {
-        float v = Input.data[idx];
-        Output.data[idx] = clamp(v, min_val, max_val);
+    if (idx < in_data.length()) {
+        float v = in_data[idx];
+        out_data[idx] = clamp(v, min_val, max_val);
     }
 }
 )";
