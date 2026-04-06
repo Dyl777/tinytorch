@@ -266,6 +266,16 @@ public:
         return tensor;
     }
 
+    // Create with pre-existing buffer (for batched uploads from mmap)
+    static OpenClTensor* from_buffer(cl_mem buffer, std::size_t size,
+                                      cl_device_id device, cl_context ctx, cl_command_queue q,
+                                      bool owns_ctx = false) {
+        OpenClTensor* tensor = new OpenClTensor(device, ctx, q, size, owns_ctx);
+        clReleaseMemObject(tensor->_buffer);  // Release the default buffer
+        tensor->_buffer = buffer;  // Take ownership of the provided buffer
+        return tensor;
+    }
+
     // Create empty tensor
     static OpenClTensor* create_empty(std::size_t size, cl_device_id device,
                                       cl_context ctx, cl_command_queue q, bool owns_ctx = false) {
@@ -652,6 +662,90 @@ private:
         clReleaseProgram(prog);
 
         return std::unique_ptr<TensorBase<float>>(result);
+    }
+
+    // ========================================================================
+    // Distributed Parallelism Primitives (GPU-native OpenCL implementations)
+    // ========================================================================
+
+    // Allgather: concatenate shards from all ranks into full tensor
+    OpenClTensor* allgather(const OpenClTensor* const* shards, int world_size) const {
+        std::size_t shard_size = _size;
+        std::size_t total_size = shard_size * world_size;
+        OpenClTensor* result = create_empty(total_size, _device, _context, _queue);
+
+        for (int r = 0; r < world_size; ++r) {
+            clEnqueueCopyBuffer(_queue, shards[r]->_buffer, result->_buffer,
+                               0, r * shard_size * sizeof(float), shard_size * sizeof(float),
+                               0, nullptr, nullptr);
+        }
+        clFinish(_queue);
+
+        return result;
+    }
+
+    // Reduce-scatter: extract this rank's shard from full tensor
+    OpenClTensor* reducescatter(const OpenClTensor* full_tensor, int rank, int world_size) const {
+        std::size_t shard_size = _size;
+        std::size_t offset = rank * shard_size;
+        OpenClTensor* result = create_empty(shard_size, _device, _context, _queue);
+
+        clEnqueueCopyBuffer(_queue, full_tensor->_buffer, result->_buffer,
+                           offset * sizeof(float), 0, shard_size * sizeof(float),
+                           0, nullptr, nullptr);
+        clFinish(_queue);
+
+        return result;
+    }
+
+    // All-reduce sum: element-wise sum of tensors from all ranks
+    OpenClTensor* allreduce_sum(const OpenClTensor* const* shards, int world_size) const {
+        OpenClTensor* result = create_empty(_size, _device, _context, _queue);
+
+        // Initialize to zero
+        std::vector<float> zeros(_size, 0.0f);
+        clEnqueueWriteBuffer(_queue, result->_buffer, CL_TRUE, 0, _size * sizeof(float),
+                            zeros.data(), 0, nullptr, nullptr);
+
+        // Add each shard
+        for (int r = 0; r < world_size; ++r) {
+            cl_program prog = compile_kernel(OCL_KERNEL_ADD, "tensor_add");
+            cl_kernel kernel = get_kernel(prog, "tensor_add");
+
+            clSetKernelArg(kernel, 0, sizeof(cl_mem), &result->_buffer);
+            clSetKernelArg(kernel, 1, sizeof(cl_mem), &shards[r]->_buffer);
+            clSetKernelArg(kernel, 2, sizeof(cl_mem), &result->_buffer);
+            cl_uint n = static_cast<cl_uint>(_size);
+            clSetKernelArg(kernel, 3, sizeof(cl_uint), &n);
+
+            execute_1d(kernel, _size);
+            clReleaseKernel(kernel);
+            clReleaseProgram(prog);
+        }
+
+        return result;
+    }
+
+    // All-reduce mean: element-wise average of tensors from all ranks
+    OpenClTensor* allreduce_mean(const OpenClTensor* const* shards, int world_size) const {
+        OpenClTensor* sum = allreduce_sum(shards, world_size);
+
+        // Divide by world_size
+        float inv_ws = 1.0f / static_cast<float>(world_size);
+        auto result = sum->multiply_scalar(inv_ws);
+        delete sum;
+        return static_cast<OpenClTensor*>(result.release());
+    }
+
+    // Broadcast: copy root rank's tensor to all other ranks
+    OpenClTensor* broadcast(const OpenClTensor* root_tensor) const {
+        OpenClTensor* result = create_empty(_size, _device, _context, _queue);
+
+        clEnqueueCopyBuffer(_queue, root_tensor->_buffer, result->_buffer,
+                           0, 0, _size * sizeof(float), 0, nullptr, nullptr);
+        clFinish(_queue);
+
+        return result;
     }
 };
 

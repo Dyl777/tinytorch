@@ -922,4 +922,84 @@ private:
         launch_kernel(source, kernel_name, args, 4, _size);
         return std::unique_ptr<TensorBase<float>>(result);
     }
+
+    // ========================================================================
+    // Distributed Parallelism Primitives (GPU-native CUDA implementations)
+    // ========================================================================
+
+    // Allgather: each rank contributes its shard, result is the full tensor
+    // shards[i] is the shard from rank i (must be on same device), result is concatenated
+    CudaTensor* allgather(const CudaTensor* const* shards, int world_size) const {
+        std::size_t shard_size = _size;
+        std::size_t total_size = shard_size * world_size;
+        std::vector<std::size_t> shape = {total_size};
+        CudaTensor* result = create_result_with_shape(shape);
+
+        F.cuCtxSetCurrent(_ctx);
+        for (int r = 0; r < world_size; ++r) {
+            std::size_t offset = r * shard_size;
+            F.cuMemcpyDtoD(static_cast<char*>(result->_buffer) + offset * sizeof(float),
+                           shards[r]->_buffer, shard_size * sizeof(float));
+        }
+
+        return result;
+    }
+
+    // Reduce-scatter: extract this rank's shard from full tensor
+    CudaTensor* reducescatter(const CudaTensor* full_tensor, int rank, int world_size) const {
+        std::size_t shard_size = _size;
+        std::size_t offset = rank * shard_size;
+        std::vector<std::size_t> shape = {shard_size};
+        CudaTensor* result = create_result_with_shape(shape);
+
+        F.cuCtxSetCurrent(_ctx);
+        F.cuMemcpyDtoD(result->_buffer,
+                       static_cast<char*>(full_tensor->_buffer) + offset * sizeof(float),
+                       shard_size * sizeof(float));
+
+        return result;
+    }
+
+    // All-reduce sum: element-wise sum of tensors from all ranks
+    CudaTensor* allreduce_sum(const CudaTensor* const* shards, int world_size) const {
+        CudaTensor* result = create_result(_size);
+
+        // Initialize result to zero
+        std::vector<float> zeros(_size, 0.0f);
+        F.cuCtxSetCurrent(_ctx);
+        F.cuMemcpyHtoD(result->_buffer, zeros.data(), _size * sizeof(float));
+
+        // Add each shard
+        for (int r = 0; r < world_size; ++r) {
+            int n = static_cast<int>(_size);
+            void* a_ptr = result->_buffer;
+            void* b_ptr = shards[r]->_buffer;
+            void* out_ptr = result->_buffer;
+            void* args[] = {&a_ptr, &b_ptr, &out_ptr, &n};
+            launch_kernel(CUDA_KERNEL_ADD, "tensor_add", args, 4, _size);
+        }
+
+        return result;
+    }
+
+    // All-reduce mean: element-wise average of tensors from all ranks
+    CudaTensor* allreduce_mean(const CudaTensor* const* shards, int world_size) const {
+        CudaTensor* sum = allreduce_sum(shards, world_size);
+
+        // Divide by world_size
+        float inv_ws = 1.0f / static_cast<float>(world_size);
+        auto result = sum->multiply_scalar(inv_ws);
+        delete sum;
+        return static_cast<CudaTensor*>(result.release());
+    }
+
+    // Broadcast: copy root rank's tensor to all other ranks
+    CudaTensor* broadcast(const CudaTensor* root_tensor) const {
+        CudaTensor* result = create_result(_size);
+
+        F.cuCtxSetCurrent(_ctx);
+        F.cuMemcpyDtoD(result->_buffer, root_tensor->_buffer, _size * sizeof(float));
+
+        return result;
+    }
 };

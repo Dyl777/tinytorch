@@ -123,6 +123,9 @@ typedef void (GL_APIENTRY *PFNGLDELETEBUFFERSPROC)(GLsizei, const GLuint*);
 #ifndef PFNGLGETBUFFERSUBDATAPROC
 typedef void (GL_APIENTRY *PFNGLGETBUFFERSUBDATAPROC)(GLenum, GLintptr, GLsizeiptr, void*);
 #endif
+#ifndef PFNGLBUFFERSUBDATAPROC
+typedef void (GL_APIENTRY *PFNGLBUFFERSUBDATAPROC)(GLenum, GLintptr, GLsizeiptr, const void*);
+#endif
 #ifndef PFNGLCREATESHADERPROC
 typedef GLuint (GL_APIENTRY *PFNGLCREATESHADERPROC)(GLenum);
 #endif
@@ -626,6 +629,7 @@ public:
         glBufferData = (PFNGLBUFFERDATAPROC)::wglGetProcAddress("glBufferData");
         glDeleteBuffers = (PFNGLDELETEBUFFERSPROC)::wglGetProcAddress("glDeleteBuffers");
         glGetBufferSubData = (PFNGLGETBUFFERSUBDATAPROC)::wglGetProcAddress("glGetBufferSubData");
+        glBufferSubData = (PFNGLBUFFERSUBDATAPROC)::wglGetProcAddress("glBufferSubData");
         glCreateShader = (PFNGLCREATESHADERPROC)::wglGetProcAddress("glCreateShader");
         glShaderSource = (PFNGLSHADERSOURCEPROC)::wglGetProcAddress("glShaderSource");
         glCompileShader = (PFNGLCOMPILESHADERPROC)::wglGetProcAddress("glCompileShader");
@@ -702,6 +706,7 @@ public:
     PFNGLBUFFERDATAPROC glBufferData = nullptr;
     PFNGLDELETEBUFFERSPROC glDeleteBuffers = nullptr;
     PFNGLGETBUFFERSUBDATAPROC glGetBufferSubData = nullptr;
+    PFNGLBUFFERSUBDATAPROC glBufferSubData = nullptr;
     PFNGLCREATESHADERPROC glCreateShader = nullptr;
     PFNGLSHADERSOURCEPROC glShaderSource = nullptr;
     PFNGLCOMPILESHADERPROC glCompileShader = nullptr;
@@ -1086,6 +1091,12 @@ public:
         gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, size_bytes, dest);
     }
 
+    void upload_buffer(GLuint buffer, const void* data, std::size_t offset_bytes, std::size_t size_bytes) {
+        auto& gl = GlFunctions::instance();
+        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+        gl.glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_bytes, size_bytes, data);
+    }
+
     void delete_buffer(GLuint buffer) {
         auto& gl = GlFunctions::instance();
         gl.glDeleteBuffers(1, &buffer);
@@ -1385,6 +1396,38 @@ public:
     GpuTensor(std::initializer_list<T> data,
               const GpuConfig& config = GpuConfig{})
         : GpuTensor(data.begin(), data.size(), config) {}
+
+    // Construct from StreamTensor - uploads in batches to avoid RAM pressure
+    GpuTensor(const StreamTensor<T>* stream, std::size_t size,
+              const GpuConfig& config = GpuConfig{})
+        : _ndim(1), _total_size(size), _config(config), _owns_data(true) {
+
+        _device_id = config.device_id;
+        if (_device_id < 0) {
+            auto& selector = get_gpu_selector();
+            if (selector.get_gpus().empty()) selector.enumerate();
+            if (selector.selected_device() < 0) selector.auto_select();
+            _device_id = selector.selected_device();
+        }
+
+        _shape = new std::size_t[1];
+        _shape[0] = size;
+        compute_strides();
+
+        // Upload in batches from StreamTensor to GPU
+        std::size_t batch_size = std::min((std::size_t)10'000'000, size / 10);
+        if (batch_size == 0) batch_size = size;
+        std::vector<T> batch(batch_size);
+
+        _ssbo = get_context().create_empty_buffer(size * sizeof(T));
+        for (std::size_t offset = 0; offset < size; offset += batch_size) {
+            std::size_t count = std::min(batch_size, size - offset);
+            for (std::size_t i = 0; i < count; ++i) {
+                batch[i] = stream->get_element(offset + i);
+            }
+            get_context().upload_buffer(_ssbo, batch.data(), offset * sizeof(T), count * sizeof(T));
+        }
+    }
 
     GpuTensor(const GpuTensor& other)
         : _ndim(other._ndim), _total_size(other._total_size),
@@ -1811,6 +1854,95 @@ private:
         get_context().delete_buffer(result->_ssbo);
         result->_ssbo = out_ssbo;
         return std::unique_ptr<TensorBase<T>>(result);
+    }
+
+    // ========================================================================
+    // Distributed Parallelism Primitives (GPU-native OpenGL compute shader implementations)
+    // ========================================================================
+
+    // Allgather: concatenate shards from all ranks into full tensor
+    GpuTensor<T>* allgather(const GpuTensor<T>* const* shards, int world_size) const {
+        std::size_t shard_size = _total_size;
+        std::size_t total_size = shard_size * world_size;
+        std::size_t* new_shape = new std::size_t[1];
+        new_shape[0] = total_size;
+
+        GpuTensor<T>* result = new GpuTensor<T>(new_shape, 1, _config);
+        delete[] new_shape;
+
+        // Copy each shard to the result buffer at the correct offset
+        for (int r = 0; r < world_size; ++r) {
+            std::vector<T> host_data(shard_size);
+            get_context().download_buffer(shards[r]->_ssbo, host_data.data(), shard_size * sizeof(T));
+            get_context().upload_buffer(result->_ssbo, host_data.data(), r * shard_size * sizeof(T), shard_size * sizeof(T));
+        }
+
+        return result;
+    }
+
+    // Reduce-scatter: extract this rank's shard from full tensor
+    GpuTensor<T>* reducescatter(const GpuTensor<T>* full_tensor, int rank, int world_size) const {
+        std::size_t shard_size = _total_size;
+        std::size_t offset = rank * shard_size;
+
+        GpuTensor<T>* result = new GpuTensor<T>(_shape, _ndim, _config);
+
+        // Copy shard from full tensor at offset
+        std::vector<T> host_data(shard_size);
+        get_context().download_buffer(full_tensor->_ssbo, host_data.data(), offset * sizeof(T), shard_size * sizeof(T));
+        get_context().upload_buffer(result->_ssbo, host_data.data(), shard_size * sizeof(T));
+
+        return result;
+    }
+
+    // All-reduce sum: element-wise sum of tensors from all ranks using GPU compute
+    GpuTensor<T>* allreduce_sum(const GpuTensor<T>* const* shards, int world_size) const {
+        // Start with first shard
+        GLuint result_ssbo = get_context().create_empty_buffer(_total_size * sizeof(T));
+        std::vector<T> host_data(_total_size);
+        get_context().download_buffer(shards[0]->_ssbo, host_data.data(), _total_size * sizeof(T));
+        get_context().upload_buffer(result_ssbo, host_data.data(), _total_size * sizeof(T));
+
+        // Add remaining shards
+        for (int r = 1; r < world_size; ++r) {
+            GLuint out_ssbo = get_context().create_empty_buffer(_total_size * sizeof(T));
+            GLuint program = get_context().get_program(SHADER_ADD, "add");
+
+            get_context().bind_buffer_base(result_ssbo, 0);
+            get_context().bind_buffer_base(shards[r]->_ssbo, 1);
+            get_context().bind_buffer_base(out_ssbo, 2);
+            get_context().dispatch(program, _total_size, _config.work_group_size);
+
+            get_context().delete_buffer(result_ssbo);
+            result_ssbo = out_ssbo;
+        }
+
+        GpuTensor<T>* result = new GpuTensor<T>(_shape, _ndim, _config);
+        get_context().delete_buffer(result->_ssbo);
+        result->_ssbo = result_ssbo;
+        return result;
+    }
+
+    // All-reduce mean: element-wise average of tensors from all ranks
+    GpuTensor<T>* allreduce_mean(const GpuTensor<T>* const* shards, int world_size) const {
+        GpuTensor<T>* sum = allreduce_sum(shards, world_size);
+
+        // Divide by world_size using scalar multiplication
+        T inv_ws = T{1} / static_cast<T>(world_size);
+        auto result = sum->multiply_scalar(inv_ws);
+        delete sum;
+        return static_cast<GpuTensor<T>*>(result.release());
+    }
+
+    // Broadcast: copy root rank's tensor to all other ranks
+    GpuTensor<T>* broadcast(const GpuTensor<T>* root_tensor) const {
+        GpuTensor<T>* result = new GpuTensor<T>(_shape, _ndim, _config);
+
+        std::vector<T> host_data(_total_size);
+        get_context().download_buffer(root_tensor->_ssbo, host_data.data(), _total_size * sizeof(T));
+        get_context().upload_buffer(result->_ssbo, host_data.data(), _total_size * sizeof(T));
+
+        return result;
     }
 
     template<typename U>

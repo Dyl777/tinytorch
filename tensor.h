@@ -1012,6 +1012,96 @@ private:
     }
 
 public:
+    // ========================================================================
+    // Distributed Parallelism Primitives
+    // ========================================================================
+    // These implement collective communication operations for data parallel,
+    // tensor parallel, FSDP, and other distributed training strategies.
+    // They operate on arrays of tensors representing different ranks.
+
+    // Allgather: each rank contributes its shard, result is the full tensor
+    // shards[i] is the shard from rank i, result is concatenated
+    template<typename U = T>
+    typename std::enable_if<std::is_arithmetic<U>::value, Tensor<T>*>::type
+    allgather(const Tensor<T>* const* shards, int world_size) const {
+        std::size_t shard_size = _total_size;
+        std::size_t total_size = shard_size * world_size;
+        std::size_t new_shape[] = {total_size};
+        Tensor<T>* result = new Tensor<T>(new_shape, 1);
+
+        for (int r = 0; r < world_size; ++r) {
+            std::size_t offset = r * shard_size;
+            for (std::size_t i = 0; i < shard_size; ++i) {
+                const_cast<volatile T&>(result->_data[offset + i]) =
+                    const_cast<const T&>(shards[r]->_data[i]);
+            }
+        }
+        return result;
+    }
+
+    // Reduce-scatter: sum full tensor across ranks, scatter shards back
+    // full_tensor is the complete tensor, result is this rank's shard
+    template<typename U = T>
+    typename std::enable_if<std::is_arithmetic<U>::value, Tensor<T>*>::type
+    reducescatter(const Tensor<T>* full_tensor, int rank, int world_size) const {
+        std::size_t shard_size = _total_size;
+        std::size_t offset = rank * shard_size;
+        Tensor<T>* result = new Tensor<T>(_shape, _ndim);
+
+        for (std::size_t i = 0; i < shard_size; ++i) {
+            const_cast<volatile T&>(result->_data[i]) =
+                const_cast<const T&>(full_tensor->_data[offset + i]);
+        }
+        return result;
+    }
+
+    // All-reduce sum: sum this tensor with corresponding elements from all ranks
+    // shards[i] is the tensor from rank i, result is the sum
+    template<typename U = T>
+    typename std::enable_if<std::is_arithmetic<U>::value, Tensor<T>*>::type
+    allreduce_sum(const Tensor<T>* const* shards, int world_size) const {
+        Tensor<T>* result = new Tensor<T>(_shape, _ndim);
+
+        for (std::size_t i = 0; i < _total_size; ++i) {
+            T sum = T{};
+            for (int r = 0; r < world_size; ++r) {
+                sum += const_cast<const T&>(shards[r]->_data[i]);
+            }
+            const_cast<volatile T&>(result->_data[i]) = sum;
+        }
+        return result;
+    }
+
+    // All-reduce mean: average this tensor across all ranks
+    template<typename U = T>
+    typename std::enable_if<std::is_arithmetic<U>::value, Tensor<T>*>::type
+    allreduce_mean(const Tensor<T>* const* shards, int world_size) const {
+        Tensor<T>* result = new Tensor<T>(_shape, _ndim);
+        T inv_world_size = T{1} / static_cast<T>(world_size);
+
+        for (std::size_t i = 0; i < _total_size; ++i) {
+            T sum = T{};
+            for (int r = 0; r < world_size; ++r) {
+                sum += const_cast<const T&>(shards[r]->_data[i]);
+            }
+            const_cast<volatile T&>(result->_data[i]) = sum * inv_world_size;
+        }
+        return result;
+    }
+
+    // Broadcast: copy root rank's tensor to all other ranks
+    // Returns a new tensor with root's data
+    template<typename U = T>
+    typename std::enable_if<std::is_arithmetic<U>::value, Tensor<T>*>::type
+    broadcast(const Tensor<T>* root_tensor) const {
+        Tensor<T>* result = new Tensor<T>(_shape, _ndim);
+        for (std::size_t i = 0; i < _total_size; ++i) {
+            const_cast<volatile T&>(result->_data[i]) =
+                const_cast<const T&>(root_tensor->_data[i]);
+        }
+        return result;
+    }
+
     // Friend stream operator
     template<typename U>
     friend std::ostream& operator<<(std::ostream& os, const Tensor<U>& tensor);

@@ -406,6 +406,71 @@ public:
         os << "]";
     }
 
+    // ========================================================================
+    // Distributed Parallelism Primitives
+    // ========================================================================
+
+    Tensor<T>* allgather(const TensorBase<T>* const* shards, int world_size) const {
+        std::size_t shard_size = _tensor->total_size();
+        std::size_t total_size = shard_size * world_size;
+        std::size_t new_shape[] = {total_size};
+        Tensor<T>* result = new Tensor<T>(new_shape, 1);
+
+        for (int r = 0; r < world_size; ++r) {
+            std::size_t offset = r * shard_size;
+            for (std::size_t i = 0; i < shard_size; ++i) {
+                result->data_non_volatile()[offset + i] = shards[r]->get_element(i);
+            }
+        }
+        return result;
+    }
+
+    Tensor<T>* reducescatter(const TensorBase<T>* full_tensor, int rank, int world_size) const {
+        std::size_t shard_size = _tensor->total_size();
+        std::size_t offset = rank * shard_size;
+        Tensor<T>* result = new Tensor<T>(_tensor->shape(), _tensor->ndim());
+
+        for (std::size_t i = 0; i < shard_size; ++i) {
+            result->data_non_volatile()[i] = full_tensor->get_element(offset + i);
+        }
+        return result;
+    }
+
+    Tensor<T>* allreduce_sum(const TensorBase<T>* const* shards, int world_size) const {
+        Tensor<T>* result = new Tensor<T>(_tensor->shape(), _tensor->ndim());
+
+        for (std::size_t i = 0; i < _tensor->total_size(); ++i) {
+            T sum = T{};
+            for (int r = 0; r < world_size; ++r) {
+                sum += shards[r]->get_element(i);
+            }
+            result->data_non_volatile()[i] = sum;
+        }
+        return result;
+    }
+
+    Tensor<T>* allreduce_mean(const TensorBase<T>* const* shards, int world_size) const {
+        Tensor<T>* result = new Tensor<T>(_tensor->shape(), _tensor->ndim());
+        T inv_world_size = T{1} / static_cast<T>(world_size);
+
+        for (std::size_t i = 0; i < _tensor->total_size(); ++i) {
+            T sum = T{};
+            for (int r = 0; r < world_size; ++r) {
+                sum += shards[r]->get_element(i);
+            }
+            result->data_non_volatile()[i] = sum * inv_world_size;
+        }
+        return result;
+    }
+
+    Tensor<T>* broadcast(const TensorBase<T>* root_tensor) const {
+        Tensor<T>* result = new Tensor<T>(_tensor->shape(), _tensor->ndim());
+        for (std::size_t i = 0; i < _tensor->total_size(); ++i) {
+            result->data_non_volatile()[i] = root_tensor->get_element(i);
+        }
+        return result;
+    }
+
     // Allow all DenseTensor instantiations to access each other's private members
     template<typename U>
     friend class DenseTensor;

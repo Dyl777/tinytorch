@@ -1131,6 +1131,151 @@ public:
         return result;
     }
 
+    // ========================================================================
+    // Distributed Parallelism Primitives (batched for memory-mapped tensors)
+    // ========================================================================
+
+    // Allgather: concatenate shards from all ranks into full tensor
+    StreamTensor<T>* allgather(const StreamTensor<T>* const* shards, int world_size,
+                                const StreamConfig& config = StreamConfig{}) const {
+        std::size_t shard_size = _total_size;
+        std::size_t total_size = shard_size * world_size;
+        std::size_t new_shape[] = {total_size};
+        StreamTensor<T>* result = new StreamTensor<T>(new_shape, 1, config);
+
+        std::size_t batch = std::min(config.effective_batch_size(sizeof(T)), shard_size);
+        T* buffer = new T[batch];
+
+        for (int r = 0; r < world_size; ++r) {
+            std::size_t out_offset = r * shard_size;
+            for (std::size_t offset = 0; offset < shard_size; offset += batch) {
+                std::size_t count = std::min(batch, shard_size - offset);
+                const void* src = shards[r]->_mmap.data_at(shards[r]->byte_offset(offset));
+                if (src) {
+                    std::memcpy(buffer, src, count * sizeof(T));
+                    void* dst = result->_mmap.data_at(result->byte_offset(out_offset + offset));
+                    if (dst) std::memcpy(dst, buffer, count * sizeof(T));
+                }
+            }
+        }
+
+        delete[] buffer;
+        return result;
+    }
+
+    // Reduce-scatter: extract this rank's shard from full tensor
+    StreamTensor<T>* reducescatter(const StreamTensor<T>* full_tensor, int rank, int world_size,
+                                    const StreamConfig& config = StreamConfig{}) const {
+        std::size_t shard_size = _total_size;
+        std::size_t offset = rank * shard_size;
+        StreamTensor<T>* result = new StreamTensor<T>(_shape, _ndim, config);
+
+        std::size_t batch = std::min(config.effective_batch_size(sizeof(T)), shard_size);
+        T* buffer = new T[batch];
+
+        for (std::size_t out_offset = 0; out_offset < shard_size; out_offset += batch) {
+            std::size_t count = std::min(batch, shard_size - out_offset);
+            const void* src = full_tensor->_mmap.data_at(full_tensor->byte_offset(offset + out_offset));
+            if (src) {
+                std::memcpy(buffer, src, count * sizeof(T));
+                void* dst = result->_mmap.data_at(result->byte_offset(out_offset));
+                if (dst) std::memcpy(dst, buffer, count * sizeof(T));
+            }
+        }
+
+        delete[] buffer;
+        return result;
+    }
+
+    // All-reduce sum: sum tensors from all ranks element-wise
+    StreamTensor<T>* allreduce_sum(const StreamTensor<T>* const* shards, int world_size,
+                                    const StreamConfig& config = StreamConfig{}) const {
+        StreamTensor<T>* result = new StreamTensor<T>(_shape, _ndim, config);
+
+        std::size_t batch = std::min(config.effective_batch_size(sizeof(T)), _total_size);
+        T* buffer = new T[batch];
+
+        for (std::size_t offset = 0; offset < _total_size; offset += batch) {
+            std::size_t count = std::min(batch, _total_size - offset);
+
+            // Initialize with zeros
+            for (std::size_t i = 0; i < count; ++i) buffer[i] = T{};
+
+            // Sum all ranks
+            for (int r = 0; r < world_size; ++r) {
+                const void* src = shards[r]->_mmap.data_at(shards[r]->byte_offset(offset));
+                if (src) {
+                    const T* src_data = static_cast<const T*>(src);
+                    for (std::size_t i = 0; i < count; ++i) {
+                        buffer[i] += src_data[i];
+                    }
+                }
+            }
+
+            void* dst = result->_mmap.data_at(result->byte_offset(offset));
+            if (dst) std::memcpy(dst, buffer, count * sizeof(T));
+        }
+
+        delete[] buffer;
+        return result;
+    }
+
+    // All-reduce mean: average tensors from all ranks element-wise
+    StreamTensor<T>* allreduce_mean(const StreamTensor<T>* const* shards, int world_size,
+                                     const StreamConfig& config = StreamConfig{}) const {
+        StreamTensor<T>* result = new StreamTensor<T>(_shape, _ndim, config);
+
+        std::size_t batch = std::min(config.effective_batch_size(sizeof(T)), _total_size);
+        T* buffer = new T[batch];
+        T inv_world_size = T{1} / static_cast<T>(world_size);
+
+        for (std::size_t offset = 0; offset < _total_size; offset += batch) {
+            std::size_t count = std::min(batch, _total_size - offset);
+
+            for (std::size_t i = 0; i < count; ++i) buffer[i] = T{};
+
+            for (int r = 0; r < world_size; ++r) {
+                const void* src = shards[r]->_mmap.data_at(shards[r]->byte_offset(offset));
+                if (src) {
+                    const T* src_data = static_cast<const T*>(src);
+                    for (std::size_t i = 0; i < count; ++i) {
+                        buffer[i] += src_data[i];
+                    }
+                }
+            }
+
+            for (std::size_t i = 0; i < count; ++i) buffer[i] *= inv_world_size;
+
+            void* dst = result->_mmap.data_at(result->byte_offset(offset));
+            if (dst) std::memcpy(dst, buffer, count * sizeof(T));
+        }
+
+        delete[] buffer;
+        return result;
+    }
+
+    // Broadcast: copy root rank's data to all other ranks
+    StreamTensor<T>* broadcast(const StreamTensor<T>* root_tensor,
+                                const StreamConfig& config = StreamConfig{}) const {
+        StreamTensor<T>* result = new StreamTensor<T>(_shape, _ndim, config);
+
+        std::size_t batch = std::min(config.effective_batch_size(sizeof(T)), _total_size);
+        T* buffer = new T[batch];
+
+        for (std::size_t offset = 0; offset < _total_size; offset += batch) {
+            std::size_t count = std::min(batch, _total_size - offset);
+            const void* src = root_tensor->_mmap.data_at(root_tensor->byte_offset(offset));
+            if (src) {
+                std::memcpy(buffer, src, count * sizeof(T));
+                void* dst = result->_mmap.data_at(result->byte_offset(offset));
+                if (dst) std::memcpy(dst, buffer, count * sizeof(T));
+            }
+        }
+
+        delete[] buffer;
+        return result;
+    }
+
     // Friend declarations
     template<typename U>
     friend std::ostream& operator<<(std::ostream& os, const StreamTensor<U>& tensor);
