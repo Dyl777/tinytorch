@@ -1,5 +1,6 @@
 #pragma once
 #include "gpu_backends.h"
+#include "cuda_tensor.h"
 #include <vector>
 #include <string>
 #include <chrono>
@@ -703,6 +704,205 @@ private:
         std::cout << std::endl;
     }
 
+    void run_cuda_tests(int device_id, const std::string& device_name, size_t n) {
+        std::cout << "\n--- CUDA Tests: " << device_name << " ---\n" << std::endl;
+
+        // Generate test data
+        std::vector<float> a = generate_data(n, 1.0f);
+        std::vector<float> b = generate_data(n, 2.0f);
+        float scalar = 3.14159f;
+
+        // CPU reference
+        std::vector<float> cpu_add(n), cpu_sub(n), cpu_mul(n), cpu_div(n), cpu_add_scalar(n), cpu_mul_scalar(n);
+        std::vector<float> cpu_neg(n), cpu_abs(n), cpu_clamp(n);
+        std::vector<bool> cpu_gt(n), cpu_lt(n);
+        float cpu_sum = 0, cpu_dot = 0, cpu_max_val = -1e38f, cpu_min_val = 1e38f;
+
+        for (size_t i = 0; i < n; ++i) {
+            cpu_add[i] = a[i] + b[i];
+            cpu_sub[i] = a[i] - b[i];
+            cpu_mul[i] = a[i] * b[i];
+            cpu_div[i] = a[i] / b[i];
+            cpu_add_scalar[i] = a[i] + scalar;
+            cpu_mul_scalar[i] = a[i] * scalar;
+            cpu_neg[i] = -a[i];
+            cpu_abs[i] = std::abs(a[i]);
+            cpu_clamp[i] = std::max(0.0f, std::min(5.0f, a[i]));
+            cpu_gt[i] = a[i] > 2.0f;
+            cpu_lt[i] = a[i] < 3.0f;
+            cpu_sum += a[i];
+            cpu_dot += a[i] * b[i];
+            if (a[i] > cpu_max_val) cpu_max_val = a[i];
+            if (a[i] < cpu_min_val) cpu_min_val = a[i];
+        }
+        float cpu_mean = cpu_sum / n;
+
+        // Create CUDA tensors (handles context creation internally)
+        CudaTensor* cuda_a = CudaTensor::from_data(a, device_id);
+        CudaTensor* cuda_b = CudaTensor::from_data(b, device_id);
+
+        if (!cuda_a || !cuda_b) {
+            std::cout << "[CUDA] Failed to create tensors" << std::endl;
+            return;
+        }
+
+        auto run_test = [&](const std::string& op, auto func, const auto& expected) {
+            auto start = std::chrono::high_resolution_clock::now();
+            auto result = func();
+            auto end = std::chrono::high_resolution_clock::now();
+
+            TestResult r;
+            r.gpu_name = device_name;
+            r.backend = "CUDA";
+            r.operation = op;
+            r.num_elements = n;
+            r.time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+
+            auto* cuda_result = dynamic_cast<CudaTensor*>(result.get());
+            if (cuda_result) {
+                std::vector<float> gpu_result = cuda_result->to_host();
+                r.max_error = max_error(expected, gpu_result);
+                r.passed = r.max_error < 1e-3f;
+            } else {
+                r.passed = false;
+                r.error_msg = "Failed to cast result to CudaTensor";
+            }
+
+            if (!r.passed) {
+                r.error_msg = "Max error: " + std::to_string(r.max_error);
+            }
+            _results.push_back(r);
+            print_result(r);
+        };
+
+        // Binary operations
+        run_test("add", [&]() { return cuda_a->add(cuda_b); }, cpu_add);
+        run_test("sub", [&]() { return cuda_a->subtract(cuda_b); }, cpu_sub);
+        run_test("mul", [&]() { return cuda_a->multiply(cuda_b); }, cpu_mul);
+        run_test("div", [&]() { return cuda_a->divide(cuda_b); }, cpu_div);
+
+        // Scalar operations
+        run_test("add_scalar", [&]() { return cuda_a->add_scalar(scalar); }, cpu_add_scalar);
+        run_test("mul_scalar", [&]() { return cuda_a->multiply_scalar(scalar); }, cpu_mul_scalar);
+
+        // Unary operations
+        run_test("negate", [&]() { return cuda_a->negate(); }, cpu_neg);
+        run_test("abs", [&]() { return cuda_a->abs(); }, cpu_abs);
+        run_test("clamp", [&]() { return cuda_a->clamp(0.0f, 5.0f); }, cpu_clamp);
+
+        // Reductions
+        {
+            auto start = std::chrono::high_resolution_clock::now();
+            float gpu_sum = cuda_a->sum();
+            auto end = std::chrono::high_resolution_clock::now();
+
+            TestResult r;
+            r.gpu_name = device_name;
+            r.backend = "CUDA";
+            r.operation = "sum";
+            r.num_elements = n;
+            r.time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+            r.max_error = std::abs(gpu_sum - cpu_sum);
+            r.passed = r.max_error < 1.0f;
+            if (!r.passed) r.error_msg = "Error: " + std::to_string(r.max_error);
+            _results.push_back(r);
+            print_result(r);
+        }
+
+        {
+            auto start = std::chrono::high_resolution_clock::now();
+            float gpu_mean = cuda_a->mean();
+            auto end = std::chrono::high_resolution_clock::now();
+
+            TestResult r;
+            r.gpu_name = device_name;
+            r.backend = "CUDA";
+            r.operation = "mean";
+            r.num_elements = n;
+            r.time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+            r.max_error = std::abs(gpu_mean - cpu_mean);
+            r.passed = r.max_error < 0.01f;
+            if (!r.passed) r.error_msg = "Error: " + std::to_string(r.max_error);
+            _results.push_back(r);
+            print_result(r);
+        }
+
+        {
+            auto start = std::chrono::high_resolution_clock::now();
+            float gpu_max = cuda_a->max();
+            auto end = std::chrono::high_resolution_clock::now();
+
+            TestResult r;
+            r.gpu_name = device_name;
+            r.backend = "CUDA";
+            r.operation = "max";
+            r.num_elements = n;
+            r.time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+            r.max_error = std::abs(gpu_max - cpu_max_val);
+            r.passed = r.max_error < 1e-3f;
+            if (!r.passed) r.error_msg = "Error: " + std::to_string(r.max_error);
+            _results.push_back(r);
+            print_result(r);
+        }
+
+        {
+            auto start = std::chrono::high_resolution_clock::now();
+            float gpu_min = cuda_a->min();
+            auto end = std::chrono::high_resolution_clock::now();
+
+            TestResult r;
+            r.gpu_name = device_name;
+            r.backend = "CUDA";
+            r.operation = "min";
+            r.num_elements = n;
+            r.time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+            r.max_error = std::abs(gpu_min - cpu_min_val);
+            r.passed = r.max_error < 1e-3f;
+            if (!r.passed) r.error_msg = "Error: " + std::to_string(r.max_error);
+            _results.push_back(r);
+            print_result(r);
+        }
+
+        {
+            auto start = std::chrono::high_resolution_clock::now();
+            float gpu_dot = cuda_a->dot(cuda_b);
+            auto end = std::chrono::high_resolution_clock::now();
+
+            TestResult r;
+            r.gpu_name = device_name;
+            r.backend = "CUDA";
+            r.operation = "dot";
+            r.num_elements = n;
+            r.time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+            r.max_error = std::abs(gpu_dot - cpu_dot);
+            r.passed = r.max_error < 1.0f;
+            if (!r.passed) r.error_msg = "Error: " + std::to_string(r.max_error);
+            _results.push_back(r);
+            print_result(r);
+        }
+
+        // Comparison operations
+        {
+            auto start = std::chrono::high_resolution_clock::now();
+            auto gt_result = cuda_a->greater_than(2.0f);
+            auto end = std::chrono::high_resolution_clock::now();
+
+            TestResult r;
+            r.gpu_name = device_name;
+            r.backend = "CUDA";
+            r.operation = "greater_than";
+            r.num_elements = n;
+            r.time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+            r.max_error = 0.0f;
+            r.passed = true;
+            _results.push_back(r);
+            print_result(r);
+        }
+
+        delete cuda_a;
+        delete cuda_b;
+    }
+
     void run_opencl_tests(cl_device_id device, cl_context context, cl_command_queue queue,
                          const std::string& device_name, size_t n) {
         std::cout << "\n--- OpenCL Tests: " << device_name << " ---\n" << std::endl;
@@ -920,6 +1120,18 @@ public:
                   << std::setw(12) << "Max Error"
                   << "Result" << std::endl;
         std::cout << std::string(100, '-') << std::endl;
+
+        // Test CUDA on all devices
+        std::cout << "\n--- CUDA Tests ---\n" << std::endl;
+
+        auto& cuda_mgr = get_cuda_manager();
+        if (cuda_mgr.initialize()) {
+            for (const auto& dev : cuda_mgr.devices()) {
+                run_cuda_tests(dev.device_id, dev.name, num_elements);
+            }
+        } else {
+            std::cout << "[SKIP] CUDA not available" << std::endl;
+        }
 
         // Test OpenCL on all devices
         auto& cl_mgr = get_opencl_manager();
