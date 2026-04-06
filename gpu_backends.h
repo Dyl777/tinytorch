@@ -113,13 +113,17 @@ public:
         if (_initialized) return true;
 
 #ifdef _WIN32
-        _cuda_lib = LoadLibraryA("cudart64_110.dll");
-        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_120.dll");
-        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_100.dll");
-        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_90.dll");
-        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_80.dll");
+        // Try CUDA 12.x first, then 11.x, then generic names
+        _cuda_lib = LoadLibraryA("cudart64_12.dll");
+        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_11.dll");
+        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_10.dll");
+        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_9.dll");
+        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_8.dll");
+        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64_7.dll");
+        if (!_cuda_lib) _cuda_lib = LoadLibraryA("cudart64.dll");
 #else
         _cuda_lib = dlopen("libcudart.so", RTLD_LAZY);
+        if (!_cuda_lib) _cuda_lib = dlopen("libcudart.so.12", RTLD_LAZY);
         if (!_cuda_lib) _cuda_lib = dlopen("libcudart.so.11", RTLD_LAZY);
 #endif
 
