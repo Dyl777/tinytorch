@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -82,27 +83,31 @@ public:
 
 #if defined(TINYTORCH_WINDOWS)
         // Windows: CreateFile + CreateFileMapping + MapViewOfFile
+        // First try to delete existing file to avoid conflicts
+        DeleteFileA(filepath.c_str());
+
         _file_handle = CreateFileA(
             filepath.c_str(),
             GENERIC_READ | GENERIC_WRITE,
-            0,  // no sharing
+            FILE_SHARE_READ | FILE_SHARE_WRITE,  // Allow sharing
             nullptr,
-            OPEN_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS,
+            CREATE_ALWAYS,  // Always create new file
+            FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_RANDOM_ACCESS,
             nullptr
         );
         if (_file_handle == INVALID_HANDLE_VALUE) {
+            DWORD err = GetLastError();
+            std::cerr << "[MmapFile] CreateFile failed: " << filepath << " (error=" << err << ")" << std::endl;
             return false;
         }
 
-        // Set file size if newly created
-        LARGE_INTEGER file_size;
-        if (GetFileSizeEx(_file_handle, &file_size) && file_size.QuadPart == 0) {
-            LARGE_INTEGER new_size;
-            new_size.QuadPart = static_cast<LONGLONG>(size);
-            SetFilePointerEx(_file_handle, new_size, nullptr, FILE_BEGIN);
-            SetEndOfFile(_file_handle);
-        }
+        // Set file size immediately after creation
+        LARGE_INTEGER new_size;
+        new_size.QuadPart = static_cast<LONGLONG>(size);
+        LARGE_INTEGER zero = {0};
+        SetFilePointerEx(_file_handle, new_size, nullptr, FILE_BEGIN);
+        SetEndOfFile(_file_handle);
+        SetFilePointerEx(_file_handle, zero, nullptr, FILE_BEGIN);
 
         _mapping_handle = CreateFileMappingA(
             _file_handle,
@@ -113,6 +118,8 @@ public:
             nullptr
         );
         if (_mapping_handle == nullptr) {
+            DWORD err = GetLastError();
+            std::cerr << "[MmapFile] CreateFileMapping failed: size=" << size << " (error=" << err << ")" << std::endl;
             CloseHandle(_file_handle);
             return false;
         }
@@ -124,6 +131,8 @@ public:
             0      // map entire file
         );
         if (_mapping == nullptr) {
+            DWORD err = GetLastError();
+            std::cerr << "[MmapFile] MapViewOfFile failed: size=" << size << " (error=" << err << ")" << std::endl;
             CloseHandle(_mapping_handle);
             CloseHandle(_file_handle);
             return false;
@@ -325,7 +334,19 @@ struct StreamConfig {
     StreamConfig()
         : batch_size(1024 * 1024),           // 1M elements
           max_memory_bytes(256 * 1024 * 1024), // 256MB
-          temp_dir("."),
+#ifdef _WIN32
+          temp_dir([]() {
+              // Use TMP or TEMP environment variable, fallback to current dir
+              const char* tmp = std::getenv("TMP");
+              if (!tmp) tmp = std::getenv("TEMP");
+              if (!tmp) tmp = ".";
+              std::string result(tmp);
+              if (!result.empty() && result.back() != '\\' && result.back() != '/') result += '\\';
+              return result;
+          }()),     // Use user temp dir
+#else
+          temp_dir("/tmp"),                  // Use Unix temp dir
+#endif
           auto_cleanup(true)
     {}
 
@@ -432,8 +453,15 @@ public:
         _total_size = compute_total_size();
 
         // Create mmap backing file
-        std::string filepath = _config.temp_dir + "/stream_tensor_" +
-                               std::to_string(reinterpret_cast<std::uintptr_t>(this)) + ".bin";
+        std::string filepath = _config.temp_dir;
+        if (!filepath.empty() && filepath.back() != '/' && filepath.back() != '\\') {
+#ifdef _WIN32
+            filepath += "\\";
+#else
+            filepath += "/";
+#endif
+        }
+        filepath += "stream_tensor_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + ".bin";
 
         if (!_mmap.open(filepath, _total_size * sizeof(T))) {
             delete[] _shape;
@@ -454,8 +482,15 @@ public:
         _shape = new std::size_t[1];
         _shape[0] = size;
 
-        std::string filepath = _config.temp_dir + "/stream_tensor_" +
-                               std::to_string(reinterpret_cast<std::uintptr_t>(this)) + ".bin";
+        std::string filepath = _config.temp_dir;
+        if (!filepath.empty() && filepath.back() != '/' && filepath.back() != '\\') {
+#ifdef _WIN32
+            filepath += "\\";
+#else
+            filepath += "/";
+#endif
+        }
+        filepath += "stream_tensor_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + ".bin";
 
         if (!_mmap.open(filepath, _total_size * sizeof(T))) {
             delete[] _shape;

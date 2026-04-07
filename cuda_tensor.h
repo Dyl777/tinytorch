@@ -7,6 +7,9 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <mutex>
+#include <fstream>
+#include <map>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -38,6 +41,7 @@ typedef int (*cuCtxCreate_v2_t)(void**, unsigned int, int);
 typedef int (*cuCtxDestroy_v2_t)(void*);
 typedef int (*cuCtxSetCurrent_t)(void*);
 typedef int (*cuModuleLoadData_t)(void**, const void*);
+typedef int (*cuModuleLoad_t)(void**, const char*);
 typedef int (*cuModuleUnload_t)(void*);
 typedef int (*cuModuleGetFunction_t)(void**, void*, const char*);
 typedef int (*cuLaunchKernel_t)(void*, unsigned int, unsigned int, unsigned int,
@@ -76,6 +80,7 @@ struct CudaDriverFunctions {
     cuCtxDestroy_v2_t cuCtxDestroy = nullptr;
     cuCtxSetCurrent_t cuCtxSetCurrent = nullptr;
     cuModuleLoadData_t cuModuleLoadData = nullptr;
+    cuModuleLoad_t cuModuleLoad = nullptr;
     cuModuleUnload_t cuModuleUnload = nullptr;
     cuModuleGetFunction_t cuModuleGetFunction = nullptr;
     cuLaunchKernel_t cuLaunchKernel = nullptr;
@@ -136,6 +141,7 @@ inline CudaDriverFunctions& get_cuda_driver_functions() {
             funcs.cuCtxDestroy = (cuCtxDestroy_v2_t)load_sym(cuda_driver_lib, "cuCtxDestroy_v2");
             funcs.cuCtxSetCurrent = (cuCtxSetCurrent_t)load_sym(cuda_driver_lib, "cuCtxSetCurrent");
             funcs.cuModuleLoadData = (cuModuleLoadData_t)load_sym(cuda_driver_lib, "cuModuleLoadData");
+            funcs.cuModuleLoad = (cuModuleLoad_t)load_sym(cuda_driver_lib, "cuModuleLoad");
             funcs.cuModuleUnload = (cuModuleUnload_t)load_sym(cuda_driver_lib, "cuModuleUnload");
             funcs.cuModuleGetFunction = (cuModuleGetFunction_t)load_sym(cuda_driver_lib, "cuModuleGetFunction");
             funcs.cuLaunchKernel = (cuLaunchKernel_t)load_sym(cuda_driver_lib, "cuLaunchKernel");
@@ -154,6 +160,101 @@ inline CudaDriverFunctions& get_cuda_driver_functions() {
     
     return funcs;
 }
+
+// Forward declaration
+static void preload_cuda_kernels(int device_id);
+
+// ============================================================================
+// CUDA Context Manager: Singleton per device to avoid context proliferation
+// ============================================================================
+struct CudaContextManager {
+    static const int MAX_DEVICES = 16;
+    void* contexts[MAX_DEVICES];
+    void* streams[MAX_DEVICES];
+    void* loading_contexts[MAX_DEVICES];  // Separate context for module loading
+    void* loading_streams[MAX_DEVICES];   // Stream for loading context
+    bool initialized[MAX_DEVICES];
+    std::mutex mutex;
+
+    // Global module cache shared across all tensors
+    std::map<std::string, void*> module_cache;
+
+    CudaContextManager() {
+        for (int i = 0; i < MAX_DEVICES; ++i) {
+            contexts[i] = nullptr;
+            streams[i] = nullptr;
+            loading_contexts[i] = nullptr;
+            loading_streams[i] = nullptr;
+            initialized[i] = false;
+        }
+    }
+
+    ~CudaContextManager() {
+        auto& F = get_cuda_driver_functions();
+        for (int i = 0; i < MAX_DEVICES; ++i) {
+            if (streams[i] && F.cuStreamDestroy) {
+                F.cuStreamDestroy(streams[i]);
+            }
+            if (contexts[i] && F.cuCtxDestroy) {
+                F.cuCtxDestroy(contexts[i]);
+            }
+        }
+    }
+
+    static CudaContextManager& instance() {
+        static CudaContextManager mgr;
+        return mgr;
+    }
+
+    void* get_context(int device_id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto& F = get_cuda_driver_functions();
+
+        if (!initialized[device_id]) {
+            F.cuInit(0);
+            int err = F.cuCtxCreate(&contexts[device_id], 0, device_id);
+            if (err != 0) {
+                std::cerr << "[CUDA] Context creation failed for device " << device_id << " (error=" << err << ")" << std::endl;
+                return nullptr;
+            }
+            err = F.cuStreamCreate(&streams[device_id], 0);
+            if (err != 0) {
+                std::cerr << "[CUDA] Stream creation failed for device " << device_id << " (error=" << err << ")" << std::endl;
+                return nullptr;
+            }
+
+            initialized[device_id] = true;
+            std::cout << "[CUDA] Initialized device " << device_id << " with context=" << contexts[device_id] << std::endl;
+
+            // Preload ALL kernels BEFORE any launches (driver bug workaround)
+            preload_cuda_kernels(device_id);
+        }
+
+        return contexts[device_id];
+    }
+
+    void* get_stream(int device_id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!initialized[device_id]) {
+            get_context(device_id);  // Initialize if not done
+        }
+        return streams[device_id];
+    }
+
+    void set_current(int device_id) {
+        auto& F = get_cuda_driver_functions();
+        void* ctx = get_context(device_id);
+        if (ctx) {
+            int err = F.cuCtxSetCurrent(ctx);
+            if (err != 0) {
+                std::cerr << "[CUDA] Failed to set context current for device " << device_id << " (error=" << err << ")" << std::endl;
+            }
+        }
+    }
+};
+
+// Forward declaration
+static void preload_cuda_kernels(int device_id);
 
 // ============================================================================
 // CUDA Kernel Sources
@@ -253,6 +354,62 @@ extern "C" __global__ void tensor_lt(const float* a, float threshold, int* out, 
 )";
 
 // ============================================================================
+// Preload all CUDA kernels at context initialization
+// ============================================================================
+static void preload_cuda_kernels(int device_id) {
+    auto& ctx_mgr = CudaContextManager::instance();
+    auto& F = get_cuda_driver_functions();
+
+    // Use execution context
+    F.cuCtxSetCurrent(ctx_mgr.contexts[device_id]);
+
+    const char* kernel_sources[] = {
+        CUDA_KERNEL_ADD, CUDA_KERNEL_SUB, CUDA_KERNEL_MUL, CUDA_KERNEL_DIV,
+        CUDA_KERNEL_ADD_SCALAR, CUDA_KERNEL_SUB_SCALAR, CUDA_KERNEL_MUL_SCALAR, CUDA_KERNEL_DIV_SCALAR,
+        CUDA_KERNEL_NEGATE, CUDA_KERNEL_ABS, CUDA_KERNEL_CLAMP, CUDA_KERNEL_GT
+    };
+    const char* kernel_names[] = {
+        "tensor_add", "tensor_sub", "tensor_mul", "tensor_div",
+        "tensor_add_scalar", "tensor_sub_scalar", "tensor_mul_scalar", "tensor_div_scalar",
+        "tensor_negate", "tensor_abs", "tensor_clamp", "tensor_gt"
+    };
+    const int num_kernels = 12;
+
+    std::cout << "[CUDA] Preloading " << num_kernels << " kernels for device " << device_id << std::endl;
+
+    for (int i = 0; i < num_kernels; ++i) {
+        void* prog = nullptr;
+        int err = F.nvrtcCreateProgram(&prog, kernel_sources[i], kernel_names[i], 0, nullptr, nullptr);
+        if (err != 0) continue;
+
+        const char* opts[] = {"--gpu-architecture=compute_50", "--std=c++11"};
+        err = F.nvrtcCompileProgram(prog, 2, opts);
+        if (err != 0) {
+            F.nvrtcDestroyProgram(&prog);
+            continue;
+        }
+
+        size_t ptx_size;
+        F.nvrtcGetPTXSize(prog, &ptx_size);
+        std::string ptx(ptx_size, '\0');
+        F.nvrtcGetPTX(prog, &ptx[0]);
+        F.nvrtcDestroyProgram(&prog);
+
+        void* module = nullptr;
+        err = F.cuModuleLoadData(&module, ptx.c_str());
+        if (err == 0) {
+            ctx_mgr.module_cache[kernel_names[i]] = module;
+            std::cout << "[CUDA] Preloaded " << kernel_names[i] << std::endl;
+        } else {
+            std::cerr << "[CUDA] Failed to preload " << kernel_names[i] << ": " << err << std::endl;
+        }
+    }
+
+    // Switch back to execution context
+    F.cuCtxSetCurrent(ctx_mgr.contexts[device_id]);
+}
+
+// ============================================================================
 // CUDA Tensor Class
 // ============================================================================
 class CudaTensor : public TensorBase<float> {
@@ -264,14 +421,14 @@ private:
     size_t _size;
     std::string _device_name;
     bool _owns_context;
-    
+
     // Multi-dimensional tensor metadata
     std::vector<std::size_t> _shape;
     std::vector<std::size_t> _stride;
     std::size_t _ndim;
 
     const CudaDriverFunctions& F;  // Reference to global functions
-    
+
     // Compute strides from shape (row-major)
     static std::vector<std::size_t> compute_strides(const std::vector<std::size_t>& shape) {
         std::size_t ndim = shape.size();
@@ -301,8 +458,12 @@ private:
             return "";
         }
 
-        const char* opts[] = {"--gpu-architecture=compute_50", "--ftz=true", "--prec-div=false", "--prec-sqrt=false"};
-        err = F.nvrtcCompileProgram(prog, 4, opts);
+        // Use compute_50 for Maxwell (MX130)
+        const char* opts[] = {
+            "--gpu-architecture=compute_50",
+            "--std=c++11"
+        };
+        err = F.nvrtcCompileProgram(prog, 2, opts);
         if (err != 0) {
             size_t log_size;
             F.nvrtcGetProgramLogSize(prog, &log_size);
@@ -319,66 +480,59 @@ private:
         F.nvrtcGetPTX(prog, &ptx[0]);
         F.nvrtcDestroyProgram(&prog);
 
+        // Ensure null termination
+        if (!ptx.empty() && ptx.back() != '\0') ptx += '\0';
+
+        std::cout << "[CUDA] PTX generated for " << kernel_name << ": " << ptx.size() << " bytes" << std::endl;
+        // Print full PTX for debugging
+        std::cout << "[CUDA] PTX full source:\n" << ptx << std::endl;
         return ptx;
     }
 
     void launch_kernel(const char* source, const char* kernel_name, void** args, int num_args, size_t n) const {
-        // Set context current before any CUDA operations
-        if (F.cuCtxSetCurrent) {
-            int err = F.cuCtxSetCurrent(_ctx);
-            if (err != 0) {
-                std::cerr << "[CUDA] Failed to set context current: " << err << std::endl;
-                return;
-            }
-        }
-        
-        std::string ptx = compile_to_ptx(source, kernel_name);
-        if (ptx.empty()) {
-            std::cerr << "[CUDA] PTX compilation failed for " << kernel_name << std::endl;
+        auto& ctx_mgr = CudaContextManager::instance();
+        auto& F = get_cuda_driver_functions();
+
+        // Lock to prevent concurrent access to CUDA context
+        std::lock_guard<std::mutex> ctx_lock(ctx_mgr.mutex);
+
+        // Use execution context
+        F.cuCtxSetCurrent(ctx_mgr.contexts[_device_id]);
+
+        // Use preloaded module from cache
+        std::string cache_key = kernel_name;
+        if (!ctx_mgr.module_cache.count(cache_key)) {
+            std::cerr << "[CUDA] Module not preloaded: " << kernel_name << std::endl;
             return;
         }
 
-        void* module = nullptr;
-        int err = F.cuModuleLoadData(&module, ptx.c_str());
-        if (err != 0) {
-            std::cerr << "[CUDA] Module load failed: " << err << std::endl;
-            return;
-        }
-
+        void* module = ctx_mgr.module_cache[cache_key];
         void* function = nullptr;
-        err = F.cuModuleGetFunction(&function, module, kernel_name);
+        int err = F.cuModuleGetFunction(&function, module, kernel_name);
         if (err != 0) {
-            std::cerr << "[CUDA] Get function failed: " << err << std::endl;
-            F.cuModuleUnload(module);
+            std::cerr << "[CUDA] Get function from cached module failed: " << err << std::endl;
             return;
         }
 
+        // Launch
         int block_size = 256;
         int grid_size = (n + block_size - 1) / block_size;
-
-        err = F.cuLaunchKernel(function, grid_size, 1, 1, block_size, 1, 1, 0, _stream, args, nullptr);
+        err = F.cuLaunchKernel(function, grid_size, 1, 1, block_size, 1, 1, 0, ctx_mgr.streams[_device_id], args, nullptr);
         if (err != 0) {
-            std::cerr << "[CUDA] Launch failed: " << err << " (grid=" << grid_size << ", block=" << block_size << ")" << std::endl;
-            F.cuModuleUnload(module);
+            std::cerr << "[CUDA] Launch failed: " << err << std::endl;
             return;
         }
 
-        F.cuStreamSynchronize(_stream);
-        F.cuModuleUnload(module);
+        // Sync
+        F.cuStreamSynchronize(ctx_mgr.streams[_device_id]);
     }
     
     // Launch a 2D kernel with customizable grid and block dimensions
-    void launch_2d_kernel(const char* source, const char* kernel_name, void** args, int num_args, 
+    void launch_2d_kernel(const char* source, const char* kernel_name, void** args, int num_args,
                           int width, int height) const {
-        // Set context current before any CUDA operations
-        if (F.cuCtxSetCurrent) {
-            int err = F.cuCtxSetCurrent(_ctx);
-            if (err != 0) {
-                std::cerr << "[CUDA] Failed to set context current: " << err << std::endl;
-                return;
-            }
-        }
-        
+        // Set context current using context manager
+        CudaContextManager::instance().set_current(_device_id);
+
         std::string ptx = compile_to_ptx(source, kernel_name);
         if (ptx.empty()) {
             std::cerr << "[CUDA] PTX compilation failed for " << kernel_name << std::endl;
@@ -438,21 +592,20 @@ public:
             return nullptr;
         }
 
-        F.cuInit(0);
-        void* ctx = nullptr;
-        F.cuCtxCreate(&ctx, 0, device_id);
-        void* stream = nullptr;
-        F.cuStreamCreate(&stream, 0);
+        auto& ctx_mgr = CudaContextManager::instance();
+        void* ctx = ctx_mgr.get_context(device_id);
+        void* stream = ctx_mgr.get_stream(device_id);
+        if (!ctx || !stream) return nullptr;
 
         std::vector<std::size_t> shape = {data.size()};
-        CudaTensor* tensor = new CudaTensor(device_id, ctx, stream, shape, true);
-        
+        CudaTensor* tensor = new CudaTensor(device_id, ctx, stream, shape, false);
+
         // Set context current before memory operations
-        F.cuCtxSetCurrent(ctx);
+        ctx_mgr.set_current(device_id);
         F.cuMemcpyHtoD(tensor->_buffer, data.data(), data.size() * sizeof(float));
         return tensor;
     }
-    
+
     // Initialize CUDA and create tensor from data with shape
     static CudaTensor* from_data(const std::vector<float>& data, const std::vector<std::size_t>& shape, int device_id) {
         auto& F = get_cuda_driver_functions();
@@ -460,22 +613,21 @@ public:
             std::cerr << "[CUDA] Failed to load CUDA functions" << std::endl;
             return nullptr;
         }
-        
+
         std::size_t total = compute_total_size(shape);
         if (total != data.size()) {
             throw std::invalid_argument("Data size doesn't match shape");
         }
 
-        F.cuInit(0);
-        void* ctx = nullptr;
-        F.cuCtxCreate(&ctx, 0, device_id);
-        void* stream = nullptr;
-        F.cuStreamCreate(&stream, 0);
+        auto& ctx_mgr = CudaContextManager::instance();
+        void* ctx = ctx_mgr.get_context(device_id);
+        void* stream = ctx_mgr.get_stream(device_id);
+        if (!ctx || !stream) return nullptr;
 
-        CudaTensor* tensor = new CudaTensor(device_id, ctx, stream, shape, true);
-        
+        CudaTensor* tensor = new CudaTensor(device_id, ctx, stream, shape, false);
+
         // Set context current before memory operations
-        F.cuCtxSetCurrent(ctx);
+        ctx_mgr.set_current(device_id);
         F.cuMemcpyHtoD(tensor->_buffer, data.data(), data.size() * sizeof(float));
         return tensor;
     }
@@ -485,30 +637,37 @@ public:
         std::vector<std::size_t> shape = {size};
         return create_empty_with_shape(shape, device_id);
     }
-    
+
     // Create empty tensor with specific shape
     static CudaTensor* create_empty_with_shape(const std::vector<std::size_t>& shape, int device_id) {
         auto& F = get_cuda_driver_functions();
         if (!F.is_loaded()) return nullptr;
 
-        F.cuInit(0);
-        void* ctx = nullptr;
-        F.cuCtxCreate(&ctx, 0, device_id);
-        void* stream = nullptr;
-        F.cuStreamCreate(&stream, 0);
+        auto& ctx_mgr = CudaContextManager::instance();
+        void* ctx = ctx_mgr.get_context(device_id);
+        void* stream = ctx_mgr.get_stream(device_id);
+        if (!ctx || !stream) return nullptr;
 
-        return new CudaTensor(device_id, ctx, stream, shape, true);
+        // Create loading context and preload kernels on first use
+        // DISABLED: preloading corrupts context on this driver
+        static bool kernels_preloaded = false;
+        if (!kernels_preloaded) {
+            // int err = F.cuCtxCreate(&ctx_mgr.loading_contexts[device_id], 0, device_id);
+            // if (err == 0) {
+            //     F.cuCtxSetCurrent(ctx_mgr.loading_contexts[device_id]);
+            //     F.cuStreamCreate(&ctx_mgr.loading_streams[device_id], 0);
+            //     preload_cuda_kernels(device_id);
+            // }
+            kernels_preloaded = true;
+        }
+
+        return new CudaTensor(device_id, ctx, stream, shape, false);
     }
     
     // Create result tensor sharing this tensor's context (for operations)
     CudaTensor* create_result_with_shape(const std::vector<std::size_t>& shape) const {
-        auto& F = get_cuda_driver_functions();
-        void* stream = nullptr;
-        F.cuStreamCreate(&stream, 0);
-        
-        // Create tensor sharing context (not owning it)
-        CudaTensor* result = new CudaTensor(_device_id, _ctx, stream, shape, false);
-        return result;
+        // Reuse this tensor's stream instead of creating new ones (prevents stream leak)
+        return new CudaTensor(_device_id, _ctx, _stream, shape, false);
     }
     
     CudaTensor* create_result(size_t size) const {
@@ -517,8 +676,7 @@ public:
 
     ~CudaTensor() {
         if (_buffer) F.cuMemFree(_buffer);
-        if (_owns_context && _stream) F.cuStreamDestroy(_stream);
-        if (_owns_context && _ctx) F.cuCtxDestroy(_ctx);
+        // Don't destroy stream/context - they're managed by CudaContextManager
     }
 
     std::string device_name() const { return _device_name; }
