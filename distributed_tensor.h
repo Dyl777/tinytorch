@@ -459,14 +459,30 @@ struct Shard {
             }
         } else {
             std::size_t shape_arr[] = {num_elements};
-            grad = std::make_unique<DenseTensor<T>>(shape_arr, 1, T{0});
+            // Respect the shard's backend type for gradient storage
+            if (device.backend == BackendType::CPU_MMAP || device.backend == BackendType::OPENCL) {
+                StreamConfig sc;
+                sc.batch_size = std::max((std::size_t)1024, num_elements / 10);
+                auto mmap_tensor = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, T{0});
+                grad = std::move(mmap_tensor);
+            } else {
+                grad = std::make_unique<DenseTensor<T>>(shape_arr, 1, T{0});
+            }
         }
     }
-    
+
     void accumulate_grad(const TensorBase<T>* new_grad) {
         if (!grad) {
             std::size_t shape_arr[] = {num_elements};
-            grad = std::make_unique<DenseTensor<T>>(shape_arr, 1, T{0});
+            // Respect the shard's backend type for gradient storage
+            if (device.backend == BackendType::CPU_MMAP || device.backend == BackendType::OPENCL) {
+                StreamConfig sc;
+                sc.batch_size = std::max((std::size_t)1024, num_elements / 10);
+                auto mmap_tensor = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, T{0});
+                grad = std::move(mmap_tensor);
+            } else {
+                grad = std::make_unique<DenseTensor<T>>(shape_arr, 1, T{0});
+            }
         }
         for (std::size_t i = 0; i < new_grad->total_size() && i < grad->total_size(); ++i) {
             T existing = grad->get_element(i);
@@ -669,7 +685,16 @@ private:
 
                     if (this_ptr->_requires_grad) {
                         std::size_t shape_arr[] = {this_ptr->_shards[i].num_elements};
-                        auto grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1);
+                        std::unique_ptr<TensorBase<T>> grad_input;
+                        // Respect shard backend for gradient tensor
+                        if (this_ptr->_shards[i].device.backend == BackendType::CPU_MMAP ||
+                            this_ptr->_shards[i].device.backend == BackendType::OPENCL) {
+                            StreamConfig sc;
+                            sc.batch_size = std::max((std::size_t)1024, this_ptr->_shards[i].num_elements / 10);
+                            grad_input = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc);
+                        } else {
+                            grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1);
+                        }
 
                         // Pass output gradient to grad_fn
                         grad_fn(this_ptr->_shards[i].data.get(),
@@ -681,7 +706,15 @@ private:
                     }
                     if (other_ptr->_requires_grad) {
                         std::size_t shape_arr[] = {other_ptr->_shards[i].num_elements};
-                        auto grad_other = std::make_unique<DenseTensor<T>>(shape_arr, 1);
+                        std::unique_ptr<TensorBase<T>> grad_other;
+                        if (other_ptr->_shards[i].device.backend == BackendType::CPU_MMAP ||
+                            other_ptr->_shards[i].device.backend == BackendType::OPENCL) {
+                            StreamConfig sc;
+                            sc.batch_size = std::max((std::size_t)1024, other_ptr->_shards[i].num_elements / 10);
+                            grad_other = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc);
+                        } else {
+                            grad_other = std::make_unique<DenseTensor<T>>(shape_arr, 1);
+                        }
 
                         grad_fn(other_ptr->_shards[i].data.get(),
                                this_ptr->_shards[i].data.get(),
@@ -752,7 +785,15 @@ private:
                     if (!result_ptr->_shards[i].grad) continue;
                     if (this_ptr->_requires_grad) {
                         std::size_t shape_arr[] = {this_ptr->_shards[i].num_elements};
-                        auto grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1);
+                        std::unique_ptr<TensorBase<T>> grad_input;
+                        if (this_ptr->_shards[i].device.backend == BackendType::CPU_MMAP ||
+                            this_ptr->_shards[i].device.backend == BackendType::OPENCL) {
+                            StreamConfig sc;
+                            sc.batch_size = std::max((std::size_t)1024, this_ptr->_shards[i].num_elements / 10);
+                            grad_input = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc);
+                        } else {
+                            grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1);
+                        }
                         grad_fn(this_ptr->_shards[i].data.get(),
                                result_ptr->_shards[i].grad.get(),
                                grad_input.get());
@@ -830,28 +871,30 @@ public:
     
     static std::shared_ptr<DistributedTensor<T>> randn(
         const std::vector<std::size_t>& shape, bool requires_grad = false) {
-        
+
         auto tensor = std::shared_ptr<DistributedTensor<T>>(
             new DistributedTensor<T>(shape, requires_grad, true));
-        
-        // Generate random values in parallel - each shard generates its own portion
-        std::mt19937 gen(42);
-        std::normal_distribution<T> dist(0, 1);
-        tensor->distribute_data([&dist, &gen](std::size_t) mutable {
+
+        // Thread-safe: each element gets its own RNG seeded from global index
+        // No shared state across async threads (fixes data race hang)
+        tensor->distribute_data([](std::size_t global_idx) {
+            std::mt19937 gen(static_cast<unsigned int>(42 + (global_idx % 1000000)));
+            std::normal_distribution<T> dist(0, 1);
             return dist(gen);
         });
         return tensor;
     }
-    
+
     static std::shared_ptr<DistributedTensor<T>> rand(
         const std::vector<std::size_t>& shape, bool requires_grad = false) {
-        
+
         auto tensor = std::shared_ptr<DistributedTensor<T>>(
             new DistributedTensor<T>(shape, requires_grad, true));
-        
-        std::mt19937 gen(42);
-        std::uniform_real_distribution<T> dist(0, 1);
-        tensor->distribute_data([&dist, &gen](std::size_t) mutable {
+
+        // Thread-safe: each element gets its own RNG seeded from global index
+        tensor->distribute_data([](std::size_t global_idx) {
+            std::mt19937 gen(static_cast<unsigned int>(42 + (global_idx % 1000000) * 7));
+            std::uniform_real_distribution<T> dist(0, 1);
             return dist(gen);
         });
         return tensor;
@@ -1189,7 +1232,7 @@ public:
         if (_requires_grad) {
             DistributedTensor<T>* this_ptr = const_cast<DistributedTensor<T>*>(this);
             DistributedTensor<T>* result_ptr = result.get();
-            
+
             result->_backward_fn = [this_ptr, result_ptr]() {
                 // d/dx sum(x) = 1 for all elements
                 // Gradient flows back as ones to each shard
@@ -1197,40 +1240,56 @@ public:
                     T grad_val = result_ptr->_shards[0].grad->get_element(0);
                     for (auto& shard : this_ptr->_shards) {
                         std::size_t shape_arr[] = {shard.num_elements};
-                        auto grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1, grad_val);
+                        std::unique_ptr<TensorBase<T>> grad_input;
+                        if (shard.device.backend == BackendType::CPU_MMAP ||
+                            shard.device.backend == BackendType::OPENCL) {
+                            StreamConfig sc;
+                            sc.batch_size = std::max((std::size_t)1024, shard.num_elements / 10);
+                            grad_input = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, grad_val);
+                        } else {
+                            grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1, grad_val);
+                        }
                         shard.accumulate_grad(grad_input.get());
                     }
                 }
             };
         }
-        
+
         return result;
     }
-    
+
     std::shared_ptr<DistributedTensor<T>> mean() const {
         T total = tree_reduce_sum();
         T mean_val = total / static_cast<T>(_total_elements);
-        
+
         std::vector<std::size_t> scalar_shape = {1};
         auto result = std::shared_ptr<DistributedTensor<T>>(
             new DistributedTensor<T>(scalar_shape, _requires_grad, false));
         result->_parents_raw.push_back(const_cast<DistributedTensor<T>*>(this));
-        
+
         result->_shards[0].data->set_element(0, mean_val);
-        
+
         // Set up backward function for autograd
         if (_requires_grad) {
             DistributedTensor<T>* this_ptr = const_cast<DistributedTensor<T>*>(this);
             auto* result_ptr = result.get();
             T inv_n = T{1} / static_cast<T>(_total_elements);
-            
+
             result->_backward_fn = [this_ptr, result_ptr, inv_n]() {
                 // d/dx mean(x) = 1/N for all elements
                 if (!result_ptr->_shards.empty() && result_ptr->_shards[0].grad) {
                     T grad_val = result_ptr->_shards[0].grad->get_element(0);
                     for (auto& shard : this_ptr->_shards) {
                         std::size_t shape_arr[] = {shard.num_elements};
-                        auto grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1, grad_val * inv_n);
+                        std::unique_ptr<TensorBase<T>> grad_input;
+                        if (shard.device.backend == BackendType::CPU_MMAP ||
+                            shard.device.backend == BackendType::OPENCL) {
+                            StreamConfig sc;
+                            sc.batch_size = std::max((std::size_t)1024, shard.num_elements / 10);
+                            grad_input = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, grad_val * inv_n);
+                        } else {
+                            grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1, grad_val * inv_n);
+                        }
                         shard.accumulate_grad(grad_input.get());
                     }
                 }
@@ -1385,26 +1444,34 @@ public:
 
         // Initialize gradient for this tensor (1.0 for scalar output)
         if (_shape.size() == 1 && _shape[0] == 1) {
-            // Set grad on the first shard to 1.0
-            if (!_shards[0].grad) {
-                std::size_t shape_arr[] = {_shards[0].num_elements};
-                _shards[0].grad = std::make_unique<DenseTensor<T>>(shape_arr, 1);
-            }
-            _shards[0].grad->set_element(0, T{1});
-            // Also set grad on other shards to 0 (they won't be used for scalar)
-            for (size_t i = 1; i < _shards.size(); ++i) {
+            // Scalar output: set grad to 1.0 on first shard, 0.0 on others
+            // Then the backward_fn of sum/mean will broadcast to all shards
+            for (size_t i = 0; i < _shards.size(); ++i) {
                 if (!_shards[i].grad) {
                     std::size_t shape_arr[] = {_shards[i].num_elements};
-                    _shards[i].grad = std::make_unique<DenseTensor<T>>(shape_arr, 1);
+                    if (_shards[i].device.backend == BackendType::CPU_MMAP ||
+                        _shards[i].device.backend == BackendType::OPENCL) {
+                        StreamConfig sc;
+                        sc.batch_size = std::max((std::size_t)1024, _shards[i].num_elements / 10);
+                        auto mmap_tensor = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, T{0});
+                        _shards[i].grad = std::move(mmap_tensor);
+                    } else {
+                        _shards[i].grad = std::make_unique<DenseTensor<T>>(shape_arr, 1, T{0});
+                    }
                 }
             }
+            // Only the first shard gets 1.0 (it's a scalar result)
+            _shards[0].grad->set_element(0, T{1});
         }
 
         // Traverse in reverse topological order
         for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {
             auto* node = *it;
 
-            // Skip if no gradient has flowed to this node
+            // Skip leaf nodes (they don't have backward functions)
+            if (node->_is_leaf) continue;
+
+            // Check if any shard has a gradient to propagate
             bool has_grad = false;
             for (const auto& shard : node->_shards) {
                 if (shard.grad) {
@@ -1414,10 +1481,7 @@ public:
             }
             if (!has_grad) continue;
 
-            // Skip leaf nodes (they don't have backward functions)
-            if (node->_is_leaf) continue;
-
-            // Apply backward function
+            // Apply backward function - this propagates gradients to parent shards
             if (node->_backward_fn) {
                 node->_backward_fn();
             }
@@ -1976,12 +2040,52 @@ public:
         return result;
     }
 
-    // All-gather: collect all shard data into a single tensor (for debugging/inspection)
-    std::vector<T> all_gather() const {
-        std::vector<T> result(_total_elements);
+    // All-gather: write shard data into a memory-mapped StreamTensor.
+    // NEVER loads all data into RAM — result is backed by an mmap file.
+    // Elements are accessed via get_element() which reads from the mmap in batches.
+    std::unique_ptr<StreamTensor<T>> all_gather_mmap() const {
+        std::size_t shape_arr[] = {_total_elements};
+        StreamConfig sc;
+        sc.batch_size = std::max((std::size_t)65536, _total_elements / 100);
+
+        auto result = std::make_unique<StreamTensor<T>>(shape_arr, 1, sc);
+
+        // Write each shard's data into the mmap file in batches
         for (const auto& shard : _shards) {
             for (std::size_t i = 0; i < shard.num_elements; ++i) {
-                result[shard.global_offset + i] = shard.data->get_element(i);
+                result->set_element(shard.global_offset + i, shard.data->get_element(i));
+            }
+        }
+        return result;
+    }
+
+    // All-gather to a std::vector (for small tensors only / debugging).
+    // WARNING: loads ALL data into RAM. Use all_gather_mmap() for large tensors.
+    std::vector<T> all_gather() const {
+        std::vector<T> result;
+        result.reserve(_total_elements);
+        for (const auto& shard : _shards) {
+            for (std::size_t i = 0; i < shard.num_elements; ++i) {
+                result.push_back(shard.data->get_element(i));
+            }
+        }
+        return result;
+    }
+
+    // All-gather to a new DistributedTensor — data goes through mmap, not RAM.
+    // Result is resharded across all available devices.
+    std::shared_ptr<DistributedTensor<T>> all_gather_distributed() const {
+        // Step 1: Write to mmap file (no full RAM load)
+        auto mmap_tensor = all_gather_mmap();
+
+        // Step 2: Create new DistributedTensor and read from mmap in batches
+        auto result = std::shared_ptr<DistributedTensor<T>>(
+            new DistributedTensor<T>(_shape, _requires_grad, false));
+
+        // Read from mmap into each shard's backend in batches
+        for (auto& shard : result->_shards) {
+            for (std::size_t i = 0; i < shard.num_elements; ++i) {
+                shard.set(i, mmap_tensor->get_element(shard.global_offset + i));
             }
         }
         return result;
