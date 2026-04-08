@@ -1,0 +1,290 @@
+In file included from auto_tensor.h:3,
+                 from parallel.h:2,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+stream_tensor.h: In member function 'bool MmapFile::open(const string&, std::size_t)':
+stream_tensor.h:107:32: warning: missing initializer for member '_LARGE_INTEGER::<unnamed struct>::HighPart' [-Wmissing-field-initializers]
+  107 |         LARGE_INTEGER zero = {0};
+      |                                ^
+In file included from parallel.h:4,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+gpu_tensor.h: In static member function 'static void* GpuSelector::create_temp_context()':
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::nVersion' [-Wmissing-field-initializers]
+  308 |         PIXELFORMATDESCRIPTOR pfd = {0};
+      |                                       ^
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::dwFlags' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::iPixelType' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cColorBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cRedBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cRedShift' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cGreenBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cGreenShift' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cBlueBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cBlueShift' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAlphaBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAlphaShift' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumRedBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumGreenBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumBlueBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumAlphaBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cDepthBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cStencilBits' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAuxBuffers' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::iLayerType' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::bReserved' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::dwLayerMask' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::dwVisibleMask' [-Wmissing-field-initializers]
+gpu_tensor.h:308:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::dwDamageMask' [-Wmissing-field-initializers]
+gpu_tensor.h: In member function 'bool GlFunctions::initialize()':
+gpu_tensor.h:627:79: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLGENBUFFERSPROC' {aka 'void (*)(int, unsigned int*)'} [-Wcast-function-type]
+  627 |         glGenBuffers = (PFNGLGENBUFFERSPROC)::wglGetProcAddress("glGenBuffers");
+      |                                                                               ^
+gpu_tensor.h:628:79: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLBINDBUFFERPROC' {aka 'void (*)(unsigned int, unsigned int)'} [-Wcast-function-type]
+  628 |         glBindBuffer = (PFNGLBINDBUFFERPROC)::wglGetProcAddress("glBindBuffer");
+      |                                                                               ^
+gpu_tensor.h:629:79: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLBUFFERDATAPROC' {aka 'void (*)(unsigned int, long long int, const void*, unsigned int)'} [-Wcast-function-type]
+  629 |         glBufferData = (PFNGLBUFFERDATAPROC)::wglGetProcAddress("glBufferData");
+      |                                                                               ^
+gpu_tensor.h:630:88: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLDELETEBUFFERSPROC' {aka 'void (*)(int, const unsigned int*)'} [-Wcast-function-type]
+  630 |         glDeleteBuffers = (PFNGLDELETEBUFFERSPROC)::wglGetProcAddress("glDeleteBuffers");
+      |                                                                                        ^
+gpu_tensor.h:631:97: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLGETBUFFERSUBDATAPROC' {aka 'void (*)(unsigned int, long long int, long long int, void*)'} [-Wcast-function-type]
+  631 |         glGetBufferSubData = (PFNGLGETBUFFERSUBDATAPROC)::wglGetProcAddress("glGetBufferSubData");
+      |                                                                                                 ^
+gpu_tensor.h:632:88: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLBUFFERSUBDATAPROC' {aka 'void (*)(unsigned int, long long int, long long int, const void*)'} [-Wcast-function-type]
+  632 |         glBufferSubData = (PFNGLBUFFERSUBDATAPROC)::wglGetProcAddress("glBufferSubData");
+      |                                                                                        ^
+gpu_tensor.h:633:85: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLCREATESHADERPROC' {aka 'unsigned int (*)(unsigned int)'} [-Wcast-function-type]
+  633 |         glCreateShader = (PFNGLCREATESHADERPROC)::wglGetProcAddress("glCreateShader");
+      |                                                                                     ^
+gpu_tensor.h:634:85: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLSHADERSOURCEPROC' {aka 'void (*)(unsigned int, int, const char* const*, const int*)'} [-Wcast-function-type]
+  634 |         glShaderSource = (PFNGLSHADERSOURCEPROC)::wglGetProcAddress("glShaderSource");
+      |                                                                                     ^
+gpu_tensor.h:635:88: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLCOMPILESHADERPROC' {aka 'void (*)(unsigned int)'} [-Wcast-function-type]
+  635 |         glCompileShader = (PFNGLCOMPILESHADERPROC)::wglGetProcAddress("glCompileShader");
+      |                                                                                        ^
+gpu_tensor.h:636:82: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLGETSHADERIVPROC' {aka 'void (*)(unsigned int, unsigned int, int*)'} [-Wcast-function-type]
+  636 |         glGetShaderiv = (PFNGLGETSHADERIVPROC)::wglGetProcAddress("glGetShaderiv");
+      |                                                                                  ^
+gpu_tensor.h:637:97: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLGETSHADERINFOLOGPROC' {aka 'void (*)(unsigned int, int, int*, char*)'} [-Wcast-function-type]
+  637 |         glGetShaderInfoLog = (PFNGLGETSHADERINFOLOGPROC)::wglGetProcAddress("glGetShaderInfoLog");
+      |                                                                                                 ^
+gpu_tensor.h:638:85: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLDELETESHADERPROC' {aka 'void (*)(unsigned int)'} [-Wcast-function-type]
+  638 |         glDeleteShader = (PFNGLDELETESHADERPROC)::wglGetProcAddress("glDeleteShader");
+      |                                                                                     ^
+gpu_tensor.h:639:88: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLCREATEPROGRAMPROC' {aka 'unsigned int (*)()'} [-Wcast-function-type]
+  639 |         glCreateProgram = (PFNGLCREATEPROGRAMPROC)::wglGetProcAddress("glCreateProgram");
+      |                                                                                        ^
+gpu_tensor.h:640:85: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLATTACHSHADERPROC' {aka 'void (*)(unsigned int, unsigned int)'} [-Wcast-function-type]
+  640 |         glAttachShader = (PFNGLATTACHSHADERPROC)::wglGetProcAddress("glAttachShader");
+      |                                                                                     ^
+gpu_tensor.h:641:82: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLLINKPROGRAMPROC' {aka 'void (*)(unsigned int)'} [-Wcast-function-type]
+  641 |         glLinkProgram = (PFNGLLINKPROGRAMPROC)::wglGetProcAddress("glLinkProgram");
+      |                                                                                  ^
+gpu_tensor.h:642:85: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLGETPROGRAMIVPROC' {aka 'void (*)(unsigned int, unsigned int, int*)'} [-Wcast-function-type]
+  642 |         glGetProgramiv = (PFNGLGETPROGRAMIVPROC)::wglGetProcAddress("glGetProgramiv");
+      |                                                                                     ^
+gpu_tensor.h:643:100: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLGETPROGRAMINFOLOGPROC' {aka 'void (*)(unsigned int, int, int*, char*)'} [-Wcast-function-type]
+  643 |         glGetProgramInfoLog = (PFNGLGETPROGRAMINFOLOGPROC)::wglGetProcAddress("glGetProgramInfoLog");
+      |                                                                                                    ^
+gpu_tensor.h:644:88: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLDELETEPROGRAMPROC' {aka 'void (*)(unsigned int)'} [-Wcast-function-type]
+  644 |         glDeleteProgram = (PFNGLDELETEPROGRAMPROC)::wglGetProcAddress("glDeleteProgram");
+      |                                                                                        ^
+gpu_tensor.h:645:79: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLUSEPROGRAMPROC' {aka 'void (*)(unsigned int)'} [-Wcast-function-type]
+  645 |         glUseProgram = (PFNGLUSEPROGRAMPROC)::wglGetProcAddress("glUseProgram");
+      |                                                                               ^
+gpu_tensor.h:646:94: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLDISPATCHCOMPUTEPROC' {aka 'void (*)(unsigned int, unsigned int, unsigned int)'} [-Wcast-function-type]
+  646 |         glDispatchCompute = (PFNGLDISPATCHCOMPUTEPROC)::wglGetProcAddress("glDispatchCompute");
+      |                                                                                              ^
+gpu_tensor.h:647:88: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLMEMORYBARRIERPROC' {aka 'void (*)(unsigned int)'} [-Wcast-function-type]
+  647 |         glMemoryBarrier = (PFNGLMEMORYBARRIERPROC)::wglGetProcAddress("glMemoryBarrier");
+      |                                                                                        ^
+gpu_tensor.h:648:91: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNGLBINDBUFFERBASEPROC' {aka 'void (*)(unsigned int, unsigned int, unsigned int)'} [-Wcast-function-type]
+  648 |         glBindBufferBase = (PFNGLBINDBUFFERBASEPROC)::wglGetProcAddress("glBindBufferBase");
+      |                                                                                           ^
+gpu_tensor.h: In member function 'bool GpuContext::initialize(int)':
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::nVersion' [-Wmissing-field-initializers]
+  971 |         PIXELFORMATDESCRIPTOR pfd = {0};
+      |                                       ^
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::dwFlags' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::iPixelType' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cColorBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cRedBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cRedShift' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cGreenBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cGreenShift' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cBlueBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cBlueShift' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAlphaBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAlphaShift' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumRedBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumGreenBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumBlueBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAccumAlphaBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cDepthBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cStencilBits' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::cAuxBuffers' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::iLayerType' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::bReserved' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::dwLayerMask' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::dwVisibleMask' [-Wmissing-field-initializers]
+gpu_tensor.h:971:39: warning: missing initializer for member 'tagPIXELFORMATDESCRIPTOR::dwDamageMask' [-Wmissing-field-initializers]
+gpu_tensor.h:984:94: warning: cast between incompatible function types from 'PROC' {aka 'long long int (*)()'} to 'PFNWGLCREATECONTEXTATTRIBSARBPROC' {aka 'HGLRC__* (*)(HDC__*, HGLRC__*, const int*)'} [-Wcast-function-type]
+  984 |             (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+      |                                                                                              ^
+In file included from C:/Users/AMBE/OpenCL-SDK/install/include/CL/cl.h:20,
+                 from gpu_backends.h:243,
+                 from cuda_tensor.h:2,
+                 from parallel.h:5,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+C:/Users/AMBE/OpenCL-SDK/install/include/CL/cl_version.h: At global scope:
+C:/Users/AMBE/OpenCL-SDK/install/include/CL/cl_version.h:22:104: note: #pragma message: cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)
+   22 | #pragma message("cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)")
+      |                                                                                                        ^
+In file included from parallel.h:5,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+cuda_tensor.h: In member function 'void CudaTensor::launch_kernel(const char*, const char*, void**, int, size_t) const':
+cuda_tensor.h:586:86: warning: unused parameter 'num_args' [-Wunused-parameter]
+  586 |     void launch_kernel(const char* source, const char* kernel_name, void** args, int num_args, size_t n) const {
+      |                                                                                  ~~~~^~~~~~~~
+cuda_tensor.h: In member function 'void CudaTensor::launch_2d_kernel(const char*, const char*, void**, int, int, int) const':
+cuda_tensor.h:673:89: warning: unused parameter 'num_args' [-Wunused-parameter]
+  673 |     void launch_2d_kernel(const char* source, const char* kernel_name, void** args, int num_args,
+      |                                                                                     ~~~~^~~~~~~~
+cuda_tensor.h: In constructor 'CudaTensor::CudaTensor(int, void*, void*, const std::vector<long long unsigned int>&, bool)':
+cuda_tensor.h:520:30: warning: 'CudaTensor::_shape' will be initialized after [-Wreorder]
+  520 |     std::vector<std::size_t> _shape;
+      |                              ^~~~~~
+cuda_tensor.h:517:10: warning:   'bool CudaTensor::_owns_context' [-Wreorder]
+  517 |     bool _owns_context;
+      |          ^~~~~~~~~~~~~
+cuda_tensor.h:714:5: warning:   when initialized here [-Wreorder]
+  714 |     CudaTensor(int device_id, void* ctx, void* stream, const std::vector<std::size_t>& shape, bool owns_ctx = false)
+      |     ^~~~~~~~~~
+cuda_tensor.h: In member function 'CudaTensor* CudaTensor::reducescatter(const CudaTensor*, int, int) const':
+cuda_tensor.h:1249:76: warning: unused parameter 'world_size' [-Wunused-parameter]
+ 1249 |     CudaTensor* reducescatter(const CudaTensor* full_tensor, int rank, int world_size) const {
+      |                                                                        ~~~~^~~~~~~~~~
+In file included from parallel.h:6,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+gpu_kernels.h: In member function 'OpenClTensor* OpenClTensor::reducescatter(const OpenClTensor*, int, int) const':
+gpu_kernels.h:688:80: warning: unused parameter 'world_size' [-Wunused-parameter]
+  688 |     OpenClTensor* reducescatter(const OpenClTensor* full_tensor, int rank, int world_size) const {
+      |                                                                            ~~~~^~~~~~~~~~
+gpu_kernels.h: In instantiation of 'GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda(const string&, auto:3, const auto:4&, bool)> [with auto:3 = GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda()>; auto:4 = std::vector<float>; std::string = std::__cxx11::basic_string<char>]':
+gpu_kernels.h:1075:69:   required from here
+gpu_kernels.h:1038:90: warning: unused parameter 'is_bool' [-Wunused-parameter]
+ 1038 |         auto run_test = [&](const std::string& op, auto func, const auto& expected, bool is_bool = false) {
+      |                                                                                     ~~~~~^~~~~~~~~~~~~~~
+gpu_kernels.h: In instantiation of 'GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda(const string&, auto:3, const auto:4&, bool)> [with auto:3 = GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda()>; auto:4 = std::vector<float>; std::string = std::__cxx11::basic_string<char>]':
+gpu_kernels.h:1076:74:   required from here
+gpu_kernels.h:1038:90: warning: unused parameter 'is_bool' [-Wunused-parameter]
+gpu_kernels.h: In instantiation of 'GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda(const string&, auto:3, const auto:4&, bool)> [with auto:3 = GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda()>; auto:4 = std::vector<float>; std::string = std::__cxx11::basic_string<char>]':
+gpu_kernels.h:1077:74:   required from here
+gpu_kernels.h:1038:90: warning: unused parameter 'is_bool' [-Wunused-parameter]
+gpu_kernels.h: In instantiation of 'GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda(const string&, auto:3, const auto:4&, bool)> [with auto:3 = GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda()>; auto:4 = std::vector<float>; std::string = std::__cxx11::basic_string<char>]':
+gpu_kernels.h:1078:72:   required from here
+gpu_kernels.h:1038:90: warning: unused parameter 'is_bool' [-Wunused-parameter]
+gpu_kernels.h: In instantiation of 'GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda(const string&, auto:3, const auto:4&, bool)> [with auto:3 = GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda()>; auto:4 = std::vector<float>; std::string = std::__cxx11::basic_string<char>]':
+gpu_kernels.h:1081:91:   required from here
+gpu_kernels.h:1038:90: warning: unused parameter 'is_bool' [-Wunused-parameter]
+gpu_kernels.h: In instantiation of 'GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda(const string&, auto:3, const auto:4&, bool)> [with auto:3 = GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda()>; auto:4 = std::vector<float>; std::string = std::__cxx11::basic_string<char>]':
+gpu_kernels.h:1082:96:   required from here
+gpu_kernels.h:1038:90: warning: unused parameter 'is_bool' [-Wunused-parameter]
+gpu_kernels.h: In instantiation of 'GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda(const string&, auto:3, const auto:4&, bool)> [with auto:3 = GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda()>; auto:4 = std::vector<float>; std::string = std::__cxx11::basic_string<char>]':
+gpu_kernels.h:1085:70:   required from here
+gpu_kernels.h:1038:90: warning: unused parameter 'is_bool' [-Wunused-parameter]
+gpu_kernels.h: In instantiation of 'GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda(const string&, auto:3, const auto:4&, bool)> [with auto:3 = GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda()>; auto:4 = std::vector<float>; std::string = std::__cxx11::basic_string<char>]':
+gpu_kernels.h:1086:64:   required from here
+gpu_kernels.h:1038:90: warning: unused parameter 'is_bool' [-Wunused-parameter]
+gpu_kernels.h: In instantiation of 'GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda(const string&, auto:3, const auto:4&, bool)> [with auto:3 = GpuKernelTestSuite::run_opencl_tests(cl_device_id, cl_context, cl_command_queue, const string&, size_t)::<lambda()>; auto:4 = std::vector<float>; std::string = std::__cxx11::basic_string<char>]':
+gpu_kernels.h:1087:80:   required from here
+gpu_kernels.h:1038:90: warning: unused parameter 'is_bool' [-Wunused-parameter]
+gpu_kernels.h: In member function 'void GpuKernelTestSuite::run_all_tests(size_t)':
+gpu_kernels.h:1238:91: warning: '_cl_command_queue* clCreateCommandQueue(cl_context, cl_device_id, cl_command_queue_properties, cl_int*)' is deprecated [-Wdeprecated-declarations]
+ 1238 |                 cl_command_queue queue = clCreateCommandQueue(context, dev.device, 0, &err);
+      |                                                                                           ^
+In file included from gpu_backends.h:243,
+                 from cuda_tensor.h:2,
+                 from parallel.h:5,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+C:/Users/AMBE/OpenCL-SDK/install/include/CL/cl.h:1891:1: note: declared here
+ 1891 | clCreateCommandQueue(cl_context                     context,
+      | ^~~~~~~~~~~~~~~~~~~~
+In file included from parallel.h:6,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+gpu_kernels.h:1238:91: warning: '_cl_command_queue* clCreateCommandQueue(cl_context, cl_device_id, cl_command_queue_properties, cl_int*)' is deprecated [-Wdeprecated-declarations]
+ 1238 |                 cl_command_queue queue = clCreateCommandQueue(context, dev.device, 0, &err);
+      |                                                                                           ^
+In file included from gpu_backends.h:243,
+                 from cuda_tensor.h:2,
+                 from parallel.h:5,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+C:/Users/AMBE/OpenCL-SDK/install/include/CL/cl.h:1891:1: note: declared here
+ 1891 | clCreateCommandQueue(cl_context                     context,
+      | ^~~~~~~~~~~~~~~~~~~~
+In file included from llm_ops_test.cpp:1:
+distributed_tensor.h: In static member function 'static void ExecutionContextManager::apply_cuda_config(const std::vector<DeviceInfo>&, std::size_t, std::size_t, ExecutionMode)':
+distributed_tensor.h:298:49: warning: unused parameter 'mode' [-Wunused-parameter]
+  298 |                                   ExecutionMode mode) {
+      |                                   ~~~~~~~~~~~~~~^~~~
+In file included from C:/Program Files (x86)/Embarcadero/Dev-Cpp/TDM-GCC-64/lib/gcc/x86_64-w64-mingw32/9.2.0/include/c++/memory:80,
+                 from auto_tensor.h:4,
+                 from parallel.h:2,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+C:/Program Files (x86)/Embarcadero/Dev-Cpp/TDM-GCC-64/lib/gcc/x86_64-w64-mingw32/9.2.0/include/c++/bits/unique_ptr.h: In instantiation of 'typename std::_MakeUniq<_Tp>::__single_object std::make_unique(_Args&& ...) [with _Tp = DenseTensor<float>; _Args = {std::array<long long unsigned int, 1>, int}; typename std::_MakeUniq<_Tp>::__single_object = std::unique_ptr<DenseTensor<float>, std::default_delete<DenseTensor<float> > >]':
+distributed_tensor.h:1673:68:   required from 'std::shared_ptr<DistributedTensor<T> > DistributedTensor<T>::softmax() const [with T = float]'
+llm_ops_test.cpp:47:25:   required from here
+C:/Program Files (x86)/Embarcadero/Dev-Cpp/TDM-GCC-64/lib/gcc/x86_64-w64-mingw32/9.2.0/include/c++/bits/unique_ptr.h:849:30: error: no matching function for call to 'DenseTensor<float>::DenseTensor(std::array<long long unsigned int, 1>, int)'
+  849 |     { return unique_ptr<_Tp>(new _Tp(std::forward<_Args>(__args)...)); }
+      |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from parallel.h:2,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+auto_tensor.h:217:5: note: candidate: 'DenseTensor<T>::DenseTensor(std::initializer_list<_Tp>) [with T = float]'
+  217 |     DenseTensor(std::initializer_list<T> data)
+      |     ^~~~~~~~~~~
+auto_tensor.h:217:5: note:   candidate expects 1 argument, 2 provided
+auto_tensor.h:213:5: note: candidate: 'DenseTensor<T>::DenseTensor(const size_t*, std::size_t, T) [with T = float; std::size_t = long long unsigned int]'
+  213 |     DenseTensor(const std::size_t* shape, std::size_t ndim, T fill_value = T{})
+      |     ^~~~~~~~~~~
+auto_tensor.h:213:36: note:   no known conversion for argument 1 from 'std::array<long long unsigned int, 1>' to 'const size_t*' {aka 'const long long unsigned int*'}
+  213 |     DenseTensor(const std::size_t* shape, std::size_t ndim, T fill_value = T{})
+      |                 ~~~~~~~~~~~~~~~~~~~^~~~~
+auto_tensor.h:209:5: note: candidate: 'DenseTensor<T>::DenseTensor(const T*, std::size_t) [with T = float; std::size_t = long long unsigned int]'
+  209 |     DenseTensor(const T* data, std::size_t size)
+      |     ^~~~~~~~~~~
+auto_tensor.h:209:26: note:   no known conversion for argument 1 from 'std::array<long long unsigned int, 1>' to 'const float*'
+  209 |     DenseTensor(const T* data, std::size_t size)
+      |                 ~~~~~~~~~^~~~
+auto_tensor.h:206:14: note: candidate: 'DenseTensor<T>::DenseTensor(Tensor<U>*) [with T = float]'
+  206 |     explicit DenseTensor(Tensor<T>* tensor) : _tensor(tensor) {}
+      |              ^~~~~~~~~~~
+auto_tensor.h:206:14: note:   candidate expects 1 argument, 2 provided
+auto_tensor.h:195:7: note: candidate: 'DenseTensor<float>::DenseTensor(DenseTensor<float>&&)'
+  195 | class DenseTensor : public TensorBase<T> {
+      |       ^~~~~~~~~~~
+auto_tensor.h:195:7: note:   candidate expects 1 argument, 2 provided
+In file included from parallel.h:6,
+                 from distributed_tensor.h:2,
+                 from llm_ops_test.cpp:1:
+gpu_kernels.h: At global scope:
+gpu_kernels.h:171:20: warning: 'OCL_KERNEL_MAX_REDUCE' defined but not used [-Wunused-variable]
+  171 | static const char* OCL_KERNEL_MAX_REDUCE = R"(
+      |                    ^~~~~~~~~~~~~~~~~~~~~
+gpu_kernels.h:144:20: warning: 'OCL_KERNEL_SUM_REDUCE' defined but not used [-Wunused-variable]
+  144 | static const char* OCL_KERNEL_SUM_REDUCE = R"(
+      |                    ^~~~~~~~~~~~~~~~~~~~~
+gpu_kernels.h:117:20: warning: 'OCL_KERNEL_DOT' defined but not used [-Wunused-variable]
+  117 | static const char* OCL_KERNEL_DOT = R"(
+      |                    ^~~~~~~~~~~~~~

@@ -165,6 +165,77 @@ inline CudaDriverFunctions& get_cuda_driver_functions() {
 static void preload_cuda_kernels(int device_id);
 
 // ============================================================================
+// CUDA Execution Configuration: Native mode toggles for CudaTensor
+// ============================================================================
+struct CudaExecutionConfig {
+    bool kernel_cache;        // Use preloaded module cache (true) or compile fresh each launch (false)
+    bool context_preload;     // Preload all kernels at init (true) or lazy-load on first use (false)
+    bool sync_after_launch;   // Synchronize stream after every kernel (true) or allow async (false)
+    bool unload_after_use;    // Unload module after each launch (true) or keep loaded (false)
+    bool debug_logging;       // Verbose CUDA operation logging (true) or silent (false)
+    bool stream_reuse;        // Reuse per-device stream (true) or create per-tensor stream (false)
+    int block_size;           // Thread block size for kernel launches (default 256)
+
+    CudaExecutionConfig()
+        : kernel_cache(true),
+          context_preload(true),
+          sync_after_launch(true),
+          unload_after_use(false),
+          debug_logging(false),
+          stream_reuse(true),
+          block_size(256) {}
+
+    // Preset configurations
+    static CudaExecutionConfig maximum_performance() {
+        CudaExecutionConfig cfg;
+        cfg.kernel_cache = true;
+        cfg.context_preload = true;
+        cfg.sync_after_launch = false;  // Async for throughput
+        cfg.unload_after_use = false;
+        cfg.debug_logging = false;
+        cfg.stream_reuse = true;
+        cfg.block_size = 256;
+        return cfg;
+    }
+
+    static CudaExecutionConfig debug_mode() {
+        CudaExecutionConfig cfg;
+        cfg.kernel_cache = false;  // Force recompile to catch PTX bugs
+        cfg.context_preload = false;
+        cfg.sync_after_launch = true;
+        cfg.unload_after_use = true;  // Catch handle leaks
+        cfg.debug_logging = true;
+        cfg.stream_reuse = true;
+        cfg.block_size = 256;
+        return cfg;
+    }
+
+    static CudaExecutionConfig low_memory() {
+        CudaExecutionConfig cfg;
+        cfg.kernel_cache = false;  // Don't hold modules in memory
+        cfg.context_preload = false;
+        cfg.sync_after_launch = true;
+        cfg.unload_after_use = true;  // Free modules after each launch
+        cfg.debug_logging = false;
+        cfg.stream_reuse = true;
+        cfg.block_size = 128;  // Smaller blocks use less shared memory
+        return cfg;
+    }
+
+    static CudaExecutionConfig safe_mode() {
+        CudaExecutionConfig cfg;
+        cfg.kernel_cache = true;
+        cfg.context_preload = true;
+        cfg.sync_after_launch = true;  // Deterministic
+        cfg.unload_after_use = false;
+        cfg.debug_logging = false;
+        cfg.stream_reuse = true;
+        cfg.block_size = 256;
+        return cfg;
+    }
+};
+
+// ============================================================================
 // CUDA Context Manager: Singleton per device to avoid context proliferation
 // ============================================================================
 struct CudaContextManager {
@@ -178,6 +249,9 @@ struct CudaContextManager {
 
     // Global module cache shared across all tensors
     std::map<std::string, void*> module_cache;
+
+    // Native execution configuration
+    CudaExecutionConfig config;
 
     CudaContextManager() {
         for (int i = 0; i < MAX_DEVICES; ++i) {
@@ -206,6 +280,24 @@ struct CudaContextManager {
         return mgr;
     }
 
+    // Native configuration API
+    void set_config(const CudaExecutionConfig& cfg) { config = cfg; }
+    const CudaExecutionConfig& get_config() const { return config; }
+
+    std::string config_summary() const {
+        std::ostringstream oss;
+        oss << "CUDA Execution Config:\n";
+        oss << "  kernel_cache:    " << (config.kernel_cache ? "ON" : "OFF") << "\n";
+        oss << "  context_preload: " << (config.context_preload ? "ON" : "OFF") << "\n";
+        oss << "  sync_after_launch: " << (config.sync_after_launch ? "ON" : "OFF") << "\n";
+        oss << "  unload_after_use: " << (config.unload_after_use ? "ON" : "OFF") << "\n";
+        oss << "  debug_logging:   " << (config.debug_logging ? "ON" : "OFF") << "\n";
+        oss << "  stream_reuse:    " << (config.stream_reuse ? "ON" : "OFF") << "\n";
+        oss << "  block_size:      " << config.block_size << "\n";
+        oss << "  cached_modules:  " << module_cache.size();
+        return oss.str();
+    }
+
     void* get_context(int device_id) {
         std::lock_guard<std::mutex> lock(mutex);
         auto& F = get_cuda_driver_functions();
@@ -226,8 +318,10 @@ struct CudaContextManager {
             initialized[device_id] = true;
             std::cout << "[CUDA] Initialized device " << device_id << " with context=" << contexts[device_id] << std::endl;
 
-            // Preload ALL kernels BEFORE any launches (driver bug workaround)
-            preload_cuda_kernels(device_id);
+            // Preload kernels only if config allows
+            if (config.context_preload) {
+                preload_cuda_kernels(device_id);
+            }
         }
 
         return contexts[device_id];
@@ -492,6 +586,13 @@ private:
     void launch_kernel(const char* source, const char* kernel_name, void** args, int num_args, size_t n) const {
         auto& ctx_mgr = CudaContextManager::instance();
         auto& F = get_cuda_driver_functions();
+        const auto& cfg = ctx_mgr.config;
+
+        // Debug logging
+        if (cfg.debug_logging) {
+            std::cout << "[CUDA] launch_kernel: " << kernel_name << " n=" << n
+                      << " block=" << cfg.block_size << std::endl;
+        }
 
         // Lock to prevent concurrent access to CUDA context
         std::lock_guard<std::mutex> ctx_lock(ctx_mgr.mutex);
@@ -499,32 +600,73 @@ private:
         // Use execution context
         F.cuCtxSetCurrent(ctx_mgr.contexts[_device_id]);
 
-        // Use preloaded module from cache
-        std::string cache_key = kernel_name;
-        if (!ctx_mgr.module_cache.count(cache_key)) {
-            std::cerr << "[CUDA] Module not preloaded: " << kernel_name << std::endl;
-            return;
+        void* module = nullptr;
+        void* function = nullptr;
+
+        // Try cache first if enabled
+        if (cfg.kernel_cache && ctx_mgr.module_cache.count(kernel_name)) {
+            module = ctx_mgr.module_cache[kernel_name];
+            int err = F.cuModuleGetFunction(&function, module, kernel_name);
+            if (err != 0 && cfg.debug_logging) {
+                std::cerr << "[CUDA] Cache miss for " << kernel_name << " (err=" << err << ")" << std::endl;
+            }
         }
 
-        void* module = ctx_mgr.module_cache[cache_key];
-        void* function = nullptr;
-        int err = F.cuModuleGetFunction(&function, module, kernel_name);
-        if (err != 0) {
-            std::cerr << "[CUDA] Get function from cached module failed: " << err << std::endl;
-            return;
+        // Compile fresh if cache disabled or miss
+        if (!function) {
+            if (cfg.debug_logging) {
+                std::cout << "[CUDA] Compiling " << kernel_name << std::endl;
+            }
+            std::string ptx = compile_to_ptx(source, kernel_name);
+            if (ptx.empty()) {
+                std::cerr << "[CUDA] PTX compilation failed for " << kernel_name << std::endl;
+                return;
+            }
+
+            int err = F.cuModuleLoadData(&module, ptx.c_str());
+            if (err != 0) {
+                std::cerr << "[CUDA] Module load failed: " << err << std::endl;
+                return;
+            }
+
+            err = F.cuModuleGetFunction(&function, module, kernel_name);
+            if (err != 0) {
+                std::cerr << "[CUDA] Get function failed: " << err << std::endl;
+                if (!cfg.kernel_cache) F.cuModuleUnload(module);
+                return;
+            }
+
+            // Cache if enabled
+            if (cfg.kernel_cache) {
+                ctx_mgr.module_cache[kernel_name] = module;
+            }
         }
 
         // Launch
-        int block_size = 256;
-        int grid_size = (n + block_size - 1) / block_size;
-        err = F.cuLaunchKernel(function, grid_size, 1, 1, block_size, 1, 1, 0, ctx_mgr.streams[_device_id], args, nullptr);
-        if (err != 0) {
-            std::cerr << "[CUDA] Launch failed: " << err << std::endl;
+        if (!function) {
+            std::cerr << "[CUDA] No function available for " << kernel_name << std::endl;
             return;
         }
 
-        // Sync
-        F.cuStreamSynchronize(ctx_mgr.streams[_device_id]);
+        int block_size = cfg.block_size;
+        int grid_size = (n + block_size - 1) / block_size;
+        int err = F.cuLaunchKernel(function, grid_size, 1, 1, block_size, 1, 1, 0,
+                                    ctx_mgr.streams[_device_id], args, nullptr);
+        if (err != 0) {
+            std::cerr << "[CUDA] Launch failed: " << err << std::endl;
+            if (!cfg.kernel_cache && module) F.cuModuleUnload(module);
+            return;
+        }
+
+        // Sync if configured
+        if (cfg.sync_after_launch) {
+            F.cuStreamSynchronize(ctx_mgr.streams[_device_id]);
+        }
+
+        // Unload if configured (and not cached)
+        if (cfg.unload_after_use && !cfg.kernel_cache && module) {
+            F.cuModuleUnload(module);
+        }
     }
     
     // Launch a 2D kernel with customizable grid and block dimensions
