@@ -6,6 +6,9 @@
 #include <limits>
 #include <algorithm>
 #include <cstdio>
+#include <atomic>
+#include <mutex>
+#include <sstream>
 
 #if defined(_WIN32) || defined(_WIN64)
     #ifndef WIN32_LEAN_AND_MEAN
@@ -82,6 +85,82 @@ inline std::size_t get_total_system_memory() {
     return 8ULL * 1024 * 1024 * 1024; // Fallback: 8GB
 #endif
 }
+
+// ============================================================================
+// MemoryBudget: Enforces a hard cap on RAM usage as a percentage of total RAM
+// ============================================================================
+// ANY data structure that tries to allocate >= max_ram_percentage of total
+// system RAM will automatically fall back to StreamTensor (mmap-backed).
+//
+// This guarantees NO data structure EVER loads everything into memory when
+// the result would exceed the configured threshold.
+//
+// Default: 30% of RAM — any single allocation >= 30% triggers mmap fallback.
+// Usage:
+//   MemoryBudget::instance().set_max_ram_percentage(70.0);  // allow up to 70%
+//   if (MemoryBudget::should_stream(num_elements * sizeof(float))) {
+//       // Use StreamTensor / MmapTensor instead of DenseTensor
+//   }
+
+struct MemoryBudget {
+    std::size_t total_ram_bytes;
+    double max_ram_percentage;       // e.g. 30.0 = allocations >= 30% of RAM use mmap
+    std::size_t threshold_bytes;     // allocation size that triggers mmap fallback
+    mutable std::mutex _mutex;
+
+    MemoryBudget()
+        : total_ram_bytes(get_total_system_memory()),
+          max_ram_percentage(30.0),
+          threshold_bytes(compute_threshold())
+    {}
+
+    static MemoryBudget& instance() {
+        static MemoryBudget budget;
+        return budget;
+    }
+
+    // Set the max RAM percentage. Any single allocation >= this % triggers mmap.
+    void set_max_ram_percentage(double pct) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        max_ram_percentage = std::max(1.0, std::min(99.0, pct));
+        threshold_bytes = compute_threshold();
+    }
+
+    double get_max_ram_percentage() const { return max_ram_percentage; }
+
+    std::size_t get_threshold_bytes() const {
+        std::lock_guard<std::mutex> lock(_mutex);
+        return threshold_bytes;
+    }
+
+    // Check if an allocation of `bytes` should use mmap instead of RAM
+    static bool should_stream(std::size_t bytes) {
+        auto& b = instance();
+        std::lock_guard<std::mutex> lock(b._mutex);
+        return bytes >= b.threshold_bytes;
+    }
+
+    void refresh_total_ram() {
+        std::lock_guard<std::mutex> lock(_mutex);
+        total_ram_bytes = get_total_system_memory();
+        threshold_bytes = compute_threshold();
+    }
+
+    std::string summary() const {
+        std::lock_guard<std::mutex> lock(_mutex);
+        std::ostringstream oss;
+        oss << "MemoryBudget: threshold=" << (threshold_bytes / (1024.0*1024.0)) << " MB ("
+            << max_ram_percentage << "% of "
+            << (total_ram_bytes / (1024.0*1024.0*1024.0)) << " GB RAM)";
+        return oss.str();
+    }
+
+private:
+    std::size_t compute_threshold() const {
+        return static_cast<std::size_t>(
+            static_cast<double>(total_ram_bytes) * max_ram_percentage / 100.0);
+    }
+};
 
 // ============================================================================
 // AutoConfig: Configuration for automatic backend selection

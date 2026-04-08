@@ -459,10 +459,14 @@ struct Shard {
             }
         } else {
             std::size_t shape_arr[] = {num_elements};
-            // Respect the shard's backend type for gradient storage
-            if (device.backend == BackendType::CPU_MMAP || device.backend == BackendType::OPENCL) {
+            std::size_t bytes = num_elements * sizeof(T);
+
+            // MemoryBudget enforcement: use mmap when grad would exceed threshold
+            if (MemoryBudget::should_stream(bytes) ||
+                device.backend == BackendType::CPU_MMAP ||
+                device.backend == BackendType::OPENCL) {
                 StreamConfig sc;
-                sc.batch_size = std::max((std::size_t)1024, num_elements / 10);
+                sc.batch_size = std::max((std::size_t)65536, num_elements / 10);
                 auto mmap_tensor = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, T{0});
                 grad = std::move(mmap_tensor);
             } else {
@@ -474,10 +478,14 @@ struct Shard {
     void accumulate_grad(const TensorBase<T>* new_grad) {
         if (!grad) {
             std::size_t shape_arr[] = {num_elements};
-            // Respect the shard's backend type for gradient storage
-            if (device.backend == BackendType::CPU_MMAP || device.backend == BackendType::OPENCL) {
+            std::size_t bytes = num_elements * sizeof(T);
+
+            // MemoryBudget enforcement: use mmap when grad would exceed threshold
+            if (MemoryBudget::should_stream(bytes) ||
+                device.backend == BackendType::CPU_MMAP ||
+                device.backend == BackendType::OPENCL) {
                 StreamConfig sc;
-                sc.batch_size = std::max((std::size_t)1024, num_elements / 10);
+                sc.batch_size = std::max((std::size_t)65536, num_elements / 10);
                 auto mmap_tensor = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, T{0});
                 grad = std::move(mmap_tensor);
             } else {
@@ -524,18 +532,37 @@ private:
     
     std::unique_ptr<TensorBase<T>> create_tensor_on_device(
         const DeviceInfo& dev, std::size_t num_elements, T fill_value = T{0}) {
-        
+
         std::size_t shape_arr[] = {num_elements};
-        
+        std::size_t bytes = num_elements * sizeof(T);
+
         switch (dev.backend) {
-            case BackendType::CPU_DENSE:
+            case BackendType::CPU_DENSE: {
+                // Enforce MemoryBudget: if allocation >= threshold, use MmapTensor
+                if (MemoryBudget::should_stream(bytes)) {
+                    StreamConfig sc;
+                    sc.batch_size = std::max((std::size_t)65536, num_elements / 100);
+#ifdef _WIN32
+                    sc.temp_dir = []() {
+                        const char* tmp = std::getenv("TMP");
+                        if (!tmp) tmp = std::getenv("TEMP");
+                        if (!tmp) tmp = ".";
+                        std::string result(tmp);
+                        if (!result.empty() && result.back() != '\\' && result.back() != '/') result += '\\';
+                        return result;
+                    }();
+#else
+                    sc.temp_dir = "/tmp";
+#endif
+                    return std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, fill_value);
+                }
                 return std::make_unique<DenseTensor<T>>(shape_arr, 1, fill_value);
-                
+            }
+
             case BackendType::CPU_MMAP: {
-                // Always use StreamTensor for CPU - lazy, batched, mmap-backed
+                // Always use StreamTensor for CPU MMAP - lazy, batched, mmap-backed
                 StreamConfig sc;
-                sc.batch_size = std::max((std::size_t)1024, num_elements / 100);
-                // Use system temp directory to avoid permission issues
+                sc.batch_size = std::max((std::size_t)65536, num_elements / 100);
 #ifdef _WIN32
                 sc.temp_dir = []() {
                     const char* tmp = std::getenv("TMP");
@@ -685,18 +712,19 @@ private:
 
                     if (this_ptr->_requires_grad) {
                         std::size_t shape_arr[] = {this_ptr->_shards[i].num_elements};
+                        std::size_t bytes = this_ptr->_shards[i].num_elements * sizeof(T);
                         std::unique_ptr<TensorBase<T>> grad_input;
-                        // Respect shard backend for gradient tensor
-                        if (this_ptr->_shards[i].device.backend == BackendType::CPU_MMAP ||
+                        // MemoryBudget + backend enforcement
+                        if (MemoryBudget::should_stream(bytes) ||
+                            this_ptr->_shards[i].device.backend == BackendType::CPU_MMAP ||
                             this_ptr->_shards[i].device.backend == BackendType::OPENCL) {
                             StreamConfig sc;
-                            sc.batch_size = std::max((std::size_t)1024, this_ptr->_shards[i].num_elements / 10);
+                            sc.batch_size = std::max((std::size_t)65536, this_ptr->_shards[i].num_elements / 10);
                             grad_input = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc);
                         } else {
                             grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1);
                         }
 
-                        // Pass output gradient to grad_fn
                         grad_fn(this_ptr->_shards[i].data.get(),
                                other_ptr->_shards[i].data.get(),
                                result_ptr->_shards[i].grad.get(),
@@ -706,11 +734,13 @@ private:
                     }
                     if (other_ptr->_requires_grad) {
                         std::size_t shape_arr[] = {other_ptr->_shards[i].num_elements};
+                        std::size_t bytes = other_ptr->_shards[i].num_elements * sizeof(T);
                         std::unique_ptr<TensorBase<T>> grad_other;
-                        if (other_ptr->_shards[i].device.backend == BackendType::CPU_MMAP ||
+                        if (MemoryBudget::should_stream(bytes) ||
+                            other_ptr->_shards[i].device.backend == BackendType::CPU_MMAP ||
                             other_ptr->_shards[i].device.backend == BackendType::OPENCL) {
                             StreamConfig sc;
-                            sc.batch_size = std::max((std::size_t)1024, other_ptr->_shards[i].num_elements / 10);
+                            sc.batch_size = std::max((std::size_t)65536, other_ptr->_shards[i].num_elements / 10);
                             grad_other = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc);
                         } else {
                             grad_other = std::make_unique<DenseTensor<T>>(shape_arr, 1);
@@ -785,11 +815,13 @@ private:
                     if (!result_ptr->_shards[i].grad) continue;
                     if (this_ptr->_requires_grad) {
                         std::size_t shape_arr[] = {this_ptr->_shards[i].num_elements};
+                        std::size_t bytes = this_ptr->_shards[i].num_elements * sizeof(T);
                         std::unique_ptr<TensorBase<T>> grad_input;
-                        if (this_ptr->_shards[i].device.backend == BackendType::CPU_MMAP ||
+                        if (MemoryBudget::should_stream(bytes) ||
+                            this_ptr->_shards[i].device.backend == BackendType::CPU_MMAP ||
                             this_ptr->_shards[i].device.backend == BackendType::OPENCL) {
                             StreamConfig sc;
-                            sc.batch_size = std::max((std::size_t)1024, this_ptr->_shards[i].num_elements / 10);
+                            sc.batch_size = std::max((std::size_t)65536, this_ptr->_shards[i].num_elements / 10);
                             grad_input = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc);
                         } else {
                             grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1);
@@ -1240,11 +1272,13 @@ public:
                     T grad_val = result_ptr->_shards[0].grad->get_element(0);
                     for (auto& shard : this_ptr->_shards) {
                         std::size_t shape_arr[] = {shard.num_elements};
+                        std::size_t bytes = shard.num_elements * sizeof(T);
                         std::unique_ptr<TensorBase<T>> grad_input;
-                        if (shard.device.backend == BackendType::CPU_MMAP ||
+                        if (MemoryBudget::should_stream(bytes) ||
+                            shard.device.backend == BackendType::CPU_MMAP ||
                             shard.device.backend == BackendType::OPENCL) {
                             StreamConfig sc;
-                            sc.batch_size = std::max((std::size_t)1024, shard.num_elements / 10);
+                            sc.batch_size = std::max((std::size_t)65536, shard.num_elements / 10);
                             grad_input = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, grad_val);
                         } else {
                             grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1, grad_val);
@@ -1281,11 +1315,13 @@ public:
                     T grad_val = result_ptr->_shards[0].grad->get_element(0);
                     for (auto& shard : this_ptr->_shards) {
                         std::size_t shape_arr[] = {shard.num_elements};
+                        std::size_t bytes = shard.num_elements * sizeof(T);
                         std::unique_ptr<TensorBase<T>> grad_input;
-                        if (shard.device.backend == BackendType::CPU_MMAP ||
+                        if (MemoryBudget::should_stream(bytes) ||
+                            shard.device.backend == BackendType::CPU_MMAP ||
                             shard.device.backend == BackendType::OPENCL) {
                             StreamConfig sc;
-                            sc.batch_size = std::max((std::size_t)1024, shard.num_elements / 10);
+                            sc.batch_size = std::max((std::size_t)65536, shard.num_elements / 10);
                             grad_input = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, grad_val * inv_n);
                         } else {
                             grad_input = std::make_unique<DenseTensor<T>>(shape_arr, 1, grad_val * inv_n);
@@ -1449,10 +1485,12 @@ public:
             for (size_t i = 0; i < _shards.size(); ++i) {
                 if (!_shards[i].grad) {
                     std::size_t shape_arr[] = {_shards[i].num_elements};
-                    if (_shards[i].device.backend == BackendType::CPU_MMAP ||
+                    std::size_t bytes = _shards[i].num_elements * sizeof(T);
+                    if (MemoryBudget::should_stream(bytes) ||
+                        _shards[i].device.backend == BackendType::CPU_MMAP ||
                         _shards[i].device.backend == BackendType::OPENCL) {
                         StreamConfig sc;
-                        sc.batch_size = std::max((std::size_t)1024, _shards[i].num_elements / 10);
+                        sc.batch_size = std::max((std::size_t)65536, _shards[i].num_elements / 10);
                         auto mmap_tensor = std::make_unique<MmapTensor<T>>(shape_arr, 1, sc, T{0});
                         _shards[i].grad = std::move(mmap_tensor);
                     } else {
@@ -1541,23 +1579,33 @@ public:
     }
     
     // Refresh device pool and redistribute if needed
+    // NEVER loads full data into RAM — uses mmap as intermediate
     void refresh_devices() {
         std::lock_guard<std::mutex> lock(_mutex);
         _device_pool.refresh();
-        
-        // Save current data
-        std::vector<T> current_data(_total_elements);
-        for (size_t i = 0; i < _total_elements; ++i) {
-            current_data[i] = get_element(i);
+
+        // Save current data to mmap-backed StreamTensor (never in RAM)
+        std::size_t shape_arr[] = {_total_elements};
+        StreamConfig sc;
+        sc.batch_size = std::max((std::size_t)65536, _total_elements / 100);
+        auto mmap_backup = std::make_unique<StreamTensor<T>>(shape_arr, 1, sc);
+
+        // Copy each shard into mmap — element-by-element, never all in RAM
+        for (const auto& shard : _shards) {
+            for (std::size_t i = 0; i < shard.num_elements; ++i) {
+                mmap_backup->set_element(shard.global_offset + i, shard.data->get_element(i));
+            }
         }
-        
+
         // Reinitialize shards with new device configuration
         initialize_shards();
-        
-        // Redistribute data
-        distribute_data([&current_data](std::size_t global_idx) {
-            return current_data[global_idx];
-        });
+
+        // Redistribute data from mmap into new shards
+        for (auto& shard : _shards) {
+            for (std::size_t i = 0; i < shard.num_elements; ++i) {
+                shard.set(i, mmap_backup->get_element(shard.global_offset + i));
+            }
+        }
     }
     
     // Get number of shards
@@ -2059,9 +2107,19 @@ public:
         return result;
     }
 
-    // All-gather to a std::vector (for small tensors only / debugging).
-    // WARNING: loads ALL data into RAM. Use all_gather_mmap() for large tensors.
+    // All-gather to a std::vector — ONLY allowed for small tensors under MemoryBudget threshold.
+    // For large tensors, throws an exception. Use all_gather_mmap() instead.
     std::vector<T> all_gather() const {
+        std::size_t bytes = _total_elements * sizeof(T);
+        if (MemoryBudget::should_stream(bytes)) {
+            std::size_t threshold = MemoryBudget::instance().get_threshold_bytes();
+            std::string msg = "all_gather() would exceed MemoryBudget (";
+            msg += std::to_string(bytes / (1024ULL * 1024ULL));
+            msg += " MB >= ";
+            msg += std::to_string(threshold / (1024ULL * 1024ULL));
+            msg += " MB threshold). Use all_gather_mmap() or all_gather_distributed() instead.";
+            throw std::runtime_error(msg);
+        }
         std::vector<T> result;
         result.reserve(_total_elements);
         for (const auto& shard : _shards) {
@@ -2072,7 +2130,7 @@ public:
         return result;
     }
 
-    // All-gather to a new DistributedTensor — data goes through mmap, not RAM.
+    // All-gather to a new DistributedTensor — data goes through mmap, never RAM.
     // Result is resharded across all available devices.
     std::shared_ptr<DistributedTensor<T>> all_gather_distributed() const {
         // Step 1: Write to mmap file (no full RAM load)
