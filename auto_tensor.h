@@ -265,6 +265,14 @@ public:
     // at a time, flushing each batch before loading the next.
     // For small tensors this just prints normally.
     virtual void batch_print(std::ostream& os, std::size_t batch_size = 100) const = 0;
+
+    // Bulk upload from host memory (efficient for GPU backends)
+    // Default implementation copies element-by-element for CPU backends
+    virtual void upload_from_host(const T* host_data, std::size_t count) {
+        for (std::size_t i = 0; i < count && i < total_size(); ++i) {
+            set_element(i, host_data[i]);
+        }
+    }
 };
 
 // ============================================================================

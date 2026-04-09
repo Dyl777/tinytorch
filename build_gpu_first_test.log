@@ -1,0 +1,44 @@
+﻿g++.exe : In file included from C:/Users/AMBE/OpenCL-SDK/install/include/CL/cl.h:20,
+At line:1 char:1
++ & 'C:/Program Files (x86)/Embarcadero/Dev-Cpp/TDM-GCC-64/bin/g++.exe' ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (In file include...ude/CL/cl.h:20,:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+                 from gpu_backends.h:265,
+                 from cuda_tensor.h:2,
+                 from parallel.h:5,
+                 from distributed_tensor.h:3,
+                 from gpu_first_test.cpp:1:
+C:/Users/AMBE/OpenCL-SDK/install/include/CL/cl_version.h:22:104: note: #pragma message: cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)
+   22 | #pragma message("cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)")
+      |                                                                                                        ^
+In file included from parallel.h:6,
+                 from distributed_tensor.h:3,
+                 from gpu_first_test.cpp:1:
+gpu_kernels.h: In member function 'void GpuKernelTestSuite::run_all_tests(size_t)':
+gpu_kernels.h:1373:62: warning: '_cl_command_queue* clCreateCommandQueue(cl_context, cl_device_id, cl_command_queue_properties, cl_int*)' is deprecated [-Wdeprecated-declarations]
+ 1373 |             clCreateCommandQueue(context, dev.device, 0, &err);
+      |                                                              ^
+In file included from gpu_backends.h:265,
+                 from cuda_tensor.h:2,
+                 from parallel.h:5,
+                 from distributed_tensor.h:3,
+                 from gpu_first_test.cpp:1:
+C:/Users/AMBE/OpenCL-SDK/install/include/CL/cl.h:1891:1: note: declared here
+ 1891 | clCreateCommandQueue(cl_context                     context,
+      | ^~~~~~~~~~~~~~~~~~~~
+In file included from parallel.h:6,
+                 from distributed_tensor.h:3,
+                 from gpu_first_test.cpp:1:
+gpu_kernels.h:1373:62: warning: '_cl_command_queue* clCreateCommandQueue(cl_context, cl_device_id, cl_command_queue_properties, cl_int*)' is deprecated [-Wdeprecated-declarations]
+ 1373 |             clCreateCommandQueue(context, dev.device, 0, &err);
+      |                                                              ^
+In file included from gpu_backends.h:265,
+                 from cuda_tensor.h:2,
+                 from parallel.h:5,
+                 from distributed_tensor.h:3,
+                 from gpu_first_test.cpp:1:
+C:/Users/AMBE/OpenCL-SDK/install/include/CL/cl.h:1891:1: note: declared here
+ 1891 | clCreateCommandQueue(cl_context                     context,
+      | ^~~~~~~~~~~~~~~~~~~~
