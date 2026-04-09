@@ -465,6 +465,20 @@ struct ExecutionContextManager {
       f.get();
   }
 
+  /*
+  // Per-shard timing record for instrumentation (MOVED TO TESTS)
+  struct ShardTiming {
+    size_t shard_index;
+    std::string device_name;
+    std::chrono::milliseconds duration;
+    bool is_gpu;
+  };
+  static std::vector<ShardTiming> &last_shard_timings() {
+    static std::vector<ShardTiming> timings;
+    return timings;
+  }
+  */
+
   // GPU-SATURATE: execute all GPU shards first, then run CPU shards only if any
   template <typename ShardOp>
   static void execute_gpu_saturate(const std::vector<ShardOp> &ops,
@@ -481,24 +495,89 @@ struct ExecutionContextManager {
       }
     }
 
-    std::vector<std::future<void>> gpu_futures;
-    gpu_futures.reserve(gpu_ops.size());
-    for (const auto &[idx, op] : gpu_ops) {
-      gpu_futures.push_back(std::async(std::launch::async, [op]() { op(); }));
-    }
-    for (auto &f : gpu_futures) {
-      f.get();
+    // Execute GPU ops
+    if (!gpu_ops.empty()) {
+      std::vector<std::future<void>> gpu_futures;
+      gpu_futures.reserve(gpu_ops.size());
+
+      for (size_t i = 0; i < gpu_ops.size(); ++i) {
+        gpu_futures.push_back(std::async(std::launch::async, [op = gpu_ops[i].second]() {
+          op();
+        }));
+      }
+
+      for (auto &f : gpu_futures) {
+        f.get();
+      }
     }
 
-    std::vector<std::future<void>> cpu_futures;
-    cpu_futures.reserve(cpu_ops.size());
-    for (const auto &[idx, op] : cpu_ops) {
-      cpu_futures.push_back(std::async(std::launch::async, [op]() { op(); }));
-    }
-    for (auto &f : cpu_futures) {
-      f.get();
+    // Execute CPU ops
+    if (!cpu_ops.empty()) {
+      std::vector<std::future<void>> cpu_futures;
+      cpu_futures.reserve(cpu_ops.size());
+
+      for (size_t i = 0; i < cpu_ops.size(); ++i) {
+        cpu_futures.push_back(std::async(std::launch::async, [op = cpu_ops[i].second]() {
+          op();
+        }));
+      }
+
+      for (auto &f : cpu_futures) {
+        f.get();
+      }
     }
   }
+
+  /*
+  // Get the last recorded shard timings (MOVED TO TESTS)
+  static std::vector<ShardTiming> get_last_shard_timings() {
+    return last_shard_timings();
+  }
+
+  // Print formatted shard timing report (MOVED TO TESTS)
+  static std::string format_shard_timings() {
+    auto timings = get_last_shard_timings();
+    if (timings.empty()) return "No shard timings available";
+
+    std::ostringstream oss;
+    oss << "=== Shard Timing Report ===\n";
+    oss << "Total shards executed: " << timings.size() << "\n\n";
+
+    // Group by device type
+    std::map<std::string, std::vector<std::chrono::milliseconds>> gpu_times;
+    std::map<std::string, std::vector<std::chrono::milliseconds>> cpu_times;
+
+    for (const auto &t : timings) {
+      if (t.is_gpu) {
+        gpu_times[t.device_name].push_back(t.duration);
+      } else {
+        cpu_times[t.device_name].push_back(t.duration);
+      }
+    }
+
+    if (!gpu_times.empty()) {
+      oss << "GPU Timings:\n";
+      for (const auto &[name, times] : gpu_times) {
+        auto total = std::accumulate(times.begin(), times.end(), std::chrono::milliseconds(0));
+        auto avg = total / times.size();
+        oss << "  " << name << ": " << times.size() << " shards, "
+            << "avg=" << avg.count() << "ms, total=" << total.count() << "ms\n";
+      }
+    }
+
+    if (!cpu_times.empty()) {
+      oss << "CPU Timings:\n";
+      for (const auto &[name, times] : cpu_times) {
+        auto total = std::accumulate(times.begin(), times.end(), std::chrono::milliseconds(0));
+        auto avg = total / times.size();
+        oss << "  " << name << ": " << times.size() << " shards, "
+            << "avg=" << avg.count() << "ms, total=" << total.count() << "ms\n";
+      }
+    }
+
+    return oss.str();
+  }
+  */
 
 private:
   template <typename ShardOp>
@@ -807,6 +886,37 @@ private:
 
     for (auto &f : futures)
       f.get();
+  }
+
+  // Distribute data from a vector to shards (used by parquet loader)
+  // This clears existing shards and redistributes
+  void distribute_from_vector(const std::vector<T> &data) {
+    _shards.clear();
+
+    auto devices = _device_pool.devices();
+    if (devices.empty()) {
+      devices.push_back(DeviceInfo{});
+      devices.back().backend = BackendType::CPU_DENSE;
+      devices.back().name = "CPU Fallback";
+    }
+
+    std::size_t elements_per_device = data.size() / devices.size();
+    std::size_t remainder = data.size() % devices.size();
+
+    std::size_t offset = 0;
+    for (size_t i = 0; i < devices.size(); ++i) {
+      std::size_t count = elements_per_device + (i < remainder ? 1 : 0);
+      if (count == 0)
+        continue;
+
+      auto tensor = create_tensor_on_device(devices[i], count);
+      tensor->upload_from_host(data.data() + offset, count);
+
+      _shards.emplace_back(std::move(tensor), devices[i], offset, count, i, _is_leaf);
+      offset += count;
+    }
+
+    _total_elements = data.size();
   }
 
   // ========================================================================
@@ -1231,19 +1341,42 @@ private:
     std::size_t offset = 0;
     int shard_id = 0;
 
+    // Get configuration options
+    double intel_factor = DistributedTensor<T>::get_intel_gpu_priority_factor();
+    std::size_t min_shard = DistributedTensor<T>::get_min_shard_size();
+
     if (gpu_elements_target > 0) {
       std::vector<std::size_t> assigned(gpu_devices.size(), 0);
       std::size_t assigned_sum = 0;
+
+      // Calculate adjusted capacities with Intel priority factor
+      std::vector<double> adjusted_caps;
+      double total_adjusted_cap = 0.0;
       for (size_t i = 0; i < gpu_devices.size(); ++i) {
-        if (total_cap == 0)
+        double adj = static_cast<double>(gpu_cap_elems[i]);
+        // Apply Intel GPU priority factor (OpenCL devices with Intel in name)
+        if (gpu_devices[i].backend == BackendType::OPENCL &&
+            gpu_devices[i].name.find("Intel") != std::string::npos) {
+          adj *= intel_factor;
+        }
+        adjusted_caps.push_back(adj);
+        total_adjusted_cap += adj;
+      }
+
+      // Initial allocation based on adjusted capacities
+      for (size_t i = 0; i < gpu_devices.size(); ++i) {
+        if (total_adjusted_cap == 0)
           break;
-        double frac = static_cast<double>(gpu_cap_elems[i]) / static_cast<double>(total_cap);
+        double frac = adjusted_caps[i] / total_adjusted_cap;
         std::size_t want = static_cast<std::size_t>(frac * static_cast<double>(gpu_elements_target));
+        // Enforce per-device cap
         if (want > gpu_cap_elems[i])
           want = gpu_cap_elems[i];
         assigned[i] = want;
         assigned_sum += want;
       }
+
+      // Redistribute leftover elements, filling GPUs to capacity
       while (assigned_sum < gpu_elements_target) {
         bool progressed = false;
         for (size_t i = 0; i < assigned.size() && assigned_sum < gpu_elements_target; ++i) {
@@ -1257,6 +1390,67 @@ private:
           break;
       }
 
+      // Identify which assignments are below minimum size
+      std::vector<std::size_t> small_shard_indices;
+      std::size_t small_shard_total = 0;
+      for (size_t i = 0; i < gpu_devices.size(); ++i) {
+        // Only consider as small if there's at least one other GPU with significant allocation
+        if (assigned[i] > 0 && assigned[i] < min_shard) {
+          // Check if any other GPU has enough room to absorb this
+          bool can_redistribute = false;
+          for (size_t j = 0; j < gpu_devices.size(); ++j) {
+            if (i != j && assigned[j] >= min_shard && assigned[j] < gpu_cap_elems[j]) {
+              can_redistribute = true;
+              break;
+            }
+          }
+          if (can_redistribute) {
+            small_shard_indices.push_back(i);
+            small_shard_total += assigned[i];
+          }
+        }
+      }
+
+      // Redistribute small shard elements to other GPUs with remaining capacity
+      if (small_shard_total > 0) {
+        // Take elements from small shards (subtract before zeroing)
+        for (size_t idx : small_shard_indices) {
+          assigned_sum -= assigned[idx];
+          assigned[idx] = 0;
+        }
+
+        // Redistribute to GPUs with capacity
+        std::size_t to_redistribute = small_shard_total;
+        while (to_redistribute > 0) {
+          bool progressed = false;
+          for (size_t i = 0; i < assigned.size() && to_redistribute > 0; ++i) {
+            if (assigned[i] < gpu_cap_elems[i]) {
+              assigned[i] += 1;
+              to_redistribute--;
+              assigned_sum++;
+              progressed = true;
+            }
+          }
+          if (!progressed)
+            break;
+        }
+        // If any elements couldn't be redistributed, put them back on original small shards
+        // (better than spilling to CPU)
+        if (to_redistribute > 0) {
+          for (size_t idx : small_shard_indices) {
+            if (to_redistribute == 0) break;
+            // Restore this shard with whatever we can
+            std::size_t restore = std::min(small_shard_total / small_shard_indices.size(), to_redistribute);
+            assigned[idx] = restore;
+            assigned_sum += restore;
+            to_redistribute -= restore;
+          }
+          // Any still remaining goes to CPU
+          remaining = to_redistribute;
+        }
+      }
+
+      // Create shards (all should now be >= min_shard or 0)
       for (size_t i = 0; i < gpu_devices.size(); ++i) {
         if (assigned[i] == 0)
           continue;
@@ -1350,7 +1544,90 @@ private:
     return pct;
   }
 
+  // GPU_SATURATE mode configuration options
+  static std::atomic<bool> &work_stealing_enabled_ref() {
+    static std::atomic<bool> enabled{false};
+    return enabled;
+  }
+
+  static std::atomic<double> &intel_gpu_priority_factor_ref() {
+    static std::atomic<double> factor{1.0};
+    return factor;
+  }
+
+  static std::atomic<std::size_t> &min_shard_size_ref() {
+    static std::atomic<std::size_t> size{1024};
+    return size;
+  }
+
+  /*
+  static std::atomic<bool> &per_shard_timing_enabled_ref() {
+    static std::atomic<bool> enabled{false};
+    return enabled;
+  }
+  */
+
+  static std::atomic<std::size_t> &work_stealing_threshold_ms_ref() {
+    static std::atomic<std::size_t> threshold{100};
+    return threshold;
+  }
+
 public:
+  // GPU_SATURATE mode configuration API
+  static void set_work_stealing_enabled(bool enabled) {
+    work_stealing_enabled_ref().store(enabled);
+  }
+
+  static bool get_work_stealing_enabled() {
+    return work_stealing_enabled_ref().load();
+  }
+
+  static void set_intel_gpu_priority_factor(double factor) {
+    if (factor < 0.1) factor = 0.1;
+    if (factor > 10.0) factor = 10.0;
+    intel_gpu_priority_factor_ref().store(factor);
+  }
+
+  static double get_intel_gpu_priority_factor() {
+    return intel_gpu_priority_factor_ref().load();
+  }
+
+  static void set_min_shard_size(std::size_t size) {
+    min_shard_size_ref().store(size);
+  }
+
+  static std::size_t get_min_shard_size() {
+    return min_shard_size_ref().load();
+  }
+
+  /*
+  static void set_per_shard_timing_enabled(bool enabled) {
+    per_shard_timing_enabled_ref().store(enabled);
+  }
+
+  static bool get_per_shard_timing_enabled() {
+    return per_shard_timing_enabled_ref().load();
+  }
+  */
+
+  static void set_work_stealing_threshold_ms(std::size_t ms) {
+    work_stealing_threshold_ms_ref().store(ms);
+  }
+
+  static std::size_t get_work_stealing_threshold_ms() {
+    return work_stealing_threshold_ms_ref().load();
+  }
+
+  static std::string gpu_saturate_config_summary() {
+    std::ostringstream oss;
+    oss << "GPU_SATURATE Config:\n";
+    oss << "  Work-stealing: " << (get_work_stealing_enabled() ? "ON" : "OFF") << "\n";
+    oss << "  Intel priority factor: " << get_intel_gpu_priority_factor() << "x\n";
+    oss << "  Min shard size: " << get_min_shard_size() << " elements\n";
+    // oss << "  Per-shard timing: " << (get_per_shard_timing_enabled() ? "ON" : "OFF") << "\n";
+    oss << "  Work-stealing threshold: " << get_work_stealing_threshold_ms() << "ms";
+    return oss.str();
+  }
 
   static std::shared_ptr<DistributedTensor<T>>
   zeros(const std::vector<std::size_t> &shape, bool requires_grad = false) {
@@ -2093,6 +2370,13 @@ public:
     oss << "Shard " << shard_id << ": " << shard.num_elements << " elements on "
         << shard.device.name << " (offset " << shard.global_offset << ")";
     return oss.str();
+  }
+
+  // Get number of elements in a shard
+  std::size_t shard_num_elements(std::size_t shard_id) const {
+    if (shard_id >= _shards.size())
+      return 0;
+    return _shards[shard_id].num_elements;
   }
 
   // Refresh device pool and redistribute if needed

@@ -96,6 +96,44 @@ int main() {
         std::cout << "OK: Large tensor works\n" << std::endl;
     }
 
+    // Test 3.5: GPU Utilization Diagnostic
+    std::cout << "=== Test 3.5: GPU Utilization Diagnostic ===" << std::endl;
+    {
+        // Get raw device info
+        DevicePool pool;
+        std::cout << "Available devices:" << std::endl;
+        for (const auto& d : pool.devices()) {
+            std::cout << "  " << d.name << " [" << backend_type_to_string(d.backend) << "]" << std::endl;
+            std::cout << "    Memory: " << (d.available_memory_bytes / (1024*1024)) << " MB" << std::endl;
+            std::cout << "    Compute score: " << d.compute_score << std::endl;
+        }
+
+        // Create tensor and show exact shard distribution
+        auto x = DistributedTensor<float>::randn({3000, 3000}); // 9M elements
+        std::cout << "\nTensor: 3000x3000 = 9M elements (~36MB)" << std::endl;
+        std::cout << "Shards: " << x->num_shards() << std::endl;
+
+        for (size_t i = 0; i < x->num_shards(); ++i) {
+            std::cout << "  Shard " << i << ": " << x->shard_info(i) << std::endl;
+        }
+
+        // Calculate percentages
+        std::size_t total = 0, cuda_elems = 0, opencl_elems = 0, cpu_elems = 0;
+        for (size_t i = 0; i < x->num_shards(); ++i) {
+            std::string dev = x->shard_device(i);
+            std::size_t elems = x->shard_num_elements(i);
+            total += elems;
+            if (dev.find("CUDA") != std::string::npos) cuda_elems += elems;
+            else if (dev.find("OpenCL") != std::string::npos) opencl_elems += elems;
+            else cpu_elems += elems;
+        }
+        std::cout << "\nElement distribution:" << std::endl;
+        std::cout << "  CUDA: " << cuda_elems << " (" << (100.0 * cuda_elems / total) << "%)" << std::endl;
+        std::cout << "  OpenCL: " << opencl_elems << " (" << (100.0 * opencl_elems / total) << "%)" << std::endl;
+        std::cout << "  CPU: " << cpu_elems << " (" << (100.0 * cpu_elems / total) << "%)" << std::endl;
+        std::cout << "OK: Diagnostic complete\n" << std::endl;
+    }
+
     // Test 4: Very large tensor (5000x5000 = 25M elements, ~100MB)
     std::cout << "=== Test 4: Very Large Tensor (5000x5000 = 25M elements, ~100MB) ===" << std::endl;
     {
@@ -106,7 +144,7 @@ int main() {
         std::cout << "Created: " << x->distribution_info() << std::endl;
         std::cout << "Shards: " << x->num_shards() << std::endl;
 
-        // Count GPU vs CPU shards
+        // Detailed shard analysis with per-shard timing
         int gpu_shards = 0, cpu_shards = 0;
         std::size_t gpu_elements = 0, cpu_elements = 0;
         for (size_t i = 0; i < x->num_shards(); ++i) {
@@ -136,9 +174,24 @@ int main() {
                 cpu_shards++;
                 cpu_elements += elems;
             }
+            std::cout << "  Shard " << i << ": " << elems << " elements on " << dev << std::endl;
         }
         std::cout << "GPU shards: " << gpu_shards << ", CPU shards: " << cpu_shards << std::endl;
-        std::cout << "GPU elements: " << gpu_elements << ", CPU elements: " << cpu_elements << std::endl;
+        std::cout << "GPU elements: " << gpu_elements << " (" << (100.0 * gpu_elements / (gpu_elements + cpu_elements)) << "%), "
+                  << "CPU elements: " << cpu_elements << std::endl;
+
+        // Per-shard operation timing
+        std::vector<std::chrono::milliseconds> shard_times;
+        for (size_t i = 0; i < x->num_shards(); ++i) {
+            auto shard_start = std::chrono::high_resolution_clock::now();
+            auto y_local = x->add_scalar(static_cast<float>(i) * 0.001f);
+            auto shard_end = std::chrono::high_resolution_clock::now();
+            shard_times.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(shard_end - shard_start));
+        }
+        std::cout << "Per-shard add_scalar timing:" << std::endl;
+        for (size_t i = 0; i < shard_times.size(); ++i) {
+            std::cout << "  Shard " << i << " (" << x->shard_device(i) << "): " << shard_times[i].count() << "ms" << std::endl;
+        }
 
         auto y = x->add_scalar(1.0f);
         auto ops_done = std::chrono::high_resolution_clock::now();
