@@ -42,7 +42,7 @@ struct TokenStats {
     std::vector<size_t> length_histogram; // Binned by 100s
 };
 
-// Compute basic statistics on text lengths
+// Compute basic statistics on text lengths - runs on each shard's device
 template<typename T>
 TokenStats analyze_text_lengths(DistributedTensor<T>* tensor) {
     TokenStats stats;
@@ -51,12 +51,46 @@ TokenStats analyze_text_lengths(DistributedTensor<T>* tensor) {
     size_t num_shards = tensor->num_shards();
     std::cout << "Analyzing " << num_shards << " shards..." << std::endl;
     
-    // Per-shard analysis
+    // Per-shard analysis using parallel execution
     std::vector<std::future<TokenStats>> futures;
     
     for (size_t shard_idx = 0; shard_idx < num_shards; ++shard_idx) {
-        // Note: In a real implementation, we'd need to access shard data
-        // For now, this is a placeholder showing the API
+        futures.push_back(std::async(std::launch::async, [tensor, shard_idx]() {
+            TokenStats shard_stats;
+            size_t num_elems = tensor->shard_num_elements(shard_idx);
+            
+            // Get offset for this shard
+            size_t global_offset = 0;
+            for (size_t i = 0; i < shard_idx; ++i) {
+                global_offset += tensor->shard_num_elements(i);
+            }
+            
+            // Process each element in this shard
+            for (size_t i = 0; i < num_elems; ++i) {
+                float val = tensor->get_element(global_offset + i);
+                size_t len = static_cast<size_t>(val);
+                
+                shard_stats.total_chars += len;
+                shard_stats.max_length = std::max(shard_stats.max_length, len);
+                shard_stats.min_length = std::min(shard_stats.min_length, len);
+            }
+            
+            return shard_stats;
+        }));
+    }
+    
+    // Aggregate results from all shards
+    for (auto& f : futures) {
+        TokenStats shard_result = f.get();
+        stats.total_chars += shard_result.total_chars;
+        stats.max_length = std::max(stats.max_length, shard_result.max_length);
+        if (shard_result.min_length < stats.min_length) {
+            stats.min_length = shard_result.min_length;
+        }
+    }
+    
+    if (tensor->total_elements() > 0) {
+        stats.avg_length = static_cast<double>(stats.total_chars) / tensor->total_elements();
     }
     
     return stats;
@@ -92,26 +126,20 @@ int main(int argc, char** argv) {
     // Configure GPU_SATURATE mode for optimal performance
     std::cout << "=== Configuring GPU_SATURATE Mode ===" << std::endl;
     
-    // Enable work-stealing: Intel GPU takes remaining work after CUDA finishes
-    DistributedTensor<float>::set_work_stealing_enabled(true);
-    std::cout << "Work-stealing: ENABLED (Intel takes remaining work)" << std::endl;
+    // CRITICAL: Set execution mode to GPU_SATURATE (was missing!)
+    DistributedTensor<float>::set_execution_mode(ExecutionMode::GPU_SATURATE);
+    std::cout << "Mode: GPU_SATURATE" << std::endl;
     
-    // Give Intel GPU higher priority (2x more work upfront)
-    // This is because Intel UHD 620 has more memory than MX130 in many laptops
-    DistributedTensor<float>::set_intel_gpu_priority_factor(2.0);
-    std::cout << "Intel GPU priority factor: 2.0x (more work assigned upfront)" << std::endl;
+    // Work-stealing and Intel priority DISABLED
+    std::cout << "Work-stealing: DISABLED" << std::endl;
+    std::cout << "Intel GPU priority: DISABLED (no scaling)" << std::endl;
     
     // Set minimum shard size to avoid tiny shards
     DistributedTensor<float>::set_min_shard_size(4096);
     std::cout << "Minimum shard size: 4096 elements" << std::endl;
     
-    // Enable per-shard timing instrumentation
-    DistributedTensor<float>::set_per_shard_timing_enabled(true);
-    std::cout << "Per-shard timing: ENABLED" << std::endl;
-    
-    // Set work-stealing threshold (Intel takes over if CUDA takes >100ms)
-    DistributedTensor<float>::set_work_stealing_threshold_ms(100);
-    std::cout << "Work-stealing threshold: 100ms" << std::endl;
+    // Timing instrumentation removed (not available in core)
+    std::cout << "Per-shard timing: DISABLED (moved to tests)" << std::endl;
     
     std::cout << std::endl;
     
@@ -132,11 +160,11 @@ int main(int argc, char** argv) {
     
     auto start = std::chrono::high_resolution_clock::now();
     
-    // Load the dataset
+    // Load text lengths as float tensor for GPU operations
+    auto tensor = DistributedParquetLoader::load_text_lengths(parquet_file, opts);
     // For text data, we'd typically load as int32 (token IDs) or float (embeddings)
     // Here we demonstrate with float for embeddings
-    auto tensor = DistributedParquetLoader::load<float>(parquet_file, opts);
-    
+    //auto tensor = DistributedParquetLoader::load<float>(parquet_file, opts);
     if (!tensor) {
         std::cerr << "Failed to load dataset" << std::endl;
         return 1;
@@ -156,11 +184,25 @@ int main(int argc, char** argv) {
         std::cout << "  " << tensor->shard_info(i) << std::endl;
     }
     
-    // Print shard timing report if available
-    std::cout << "\n" << ExecutionContextManager::format_shard_timings() << std::endl;
     
     // Run distributed analysis operations
     std::cout << "=== Running Analysis Operations ===" << std::endl;
+    
+    // Print first few text samples
+    std::cout << "\n=== Text Samples ===" << std::endl;
+    auto samples = DistributedParquetLoader::load_text_samples(parquet_file, opts, 3);
+    for (size_t i = 0; i < samples.size(); ++i) {
+        std::cout << "Row " << i << " (length=" << samples[i].length() << "): " 
+                  << samples[i].substr(0, 100) << (samples[i].length() > 100 ? "..." : "") << std::endl;
+    }
+    
+    // Run text length analysis
+    std::cout << "\n=== Analyzing Text Lengths ===" << std::endl;
+    auto stats = analyze_text_lengths(tensor.get());
+    std::cout << "Total characters: " << stats.total_chars << std::endl;
+    std::cout << "Max length: " << stats.max_length << std::endl;
+    std::cout << "Min length: " << stats.min_length << std::endl;
+    std::cout << "Avg length: " << stats.avg_length << std::endl;
     
     // Operation 1: Sum (total of all elements)
     auto sum_start = std::chrono::high_resolution_clock::now();
@@ -168,32 +210,48 @@ int main(int argc, char** argv) {
     auto sum_done = std::chrono::high_resolution_clock::now();
     auto sum_ms = std::chrono::duration_cast<std::chrono::milliseconds>(sum_done - sum_start).count();
     
-    std::cout << "Sum operation: " << sum_ms << "ms" << std::endl;
-    std::cout << "Sum result: " << sum_tensor->get_element(0) << std::endl;
+    std::cout << "\nSum operation: " << sum_ms << "ms" << std::endl;
+    std::cout << "Sum result (total lengths): " << sum_tensor->get_element(0) << std::endl;
     
-    // Operation 2: Element-wise multiply (simulate embedding scaling)
+    // Print sample values before operations
+    std::cout << "\n=== Sample Values (First 10 lengths) ===" << std::endl;
+    std::cout << "Original: ";
+    for (size_t i = 0; i < std::min(size_t(10), tensor->total_elements()); ++i) {
+        std::cout << tensor->get_element(i) << " ";
+    }
+    std::cout << std::endl;
+    
+    // Operation 2: Element-wise multiply (scale lengths)
     auto mul_start = std::chrono::high_resolution_clock::now();
     auto scaled = tensor->multiply_scalar(0.5f);
     auto mul_done = std::chrono::high_resolution_clock::now();
     auto mul_ms = std::chrono::duration_cast<std::chrono::milliseconds>(mul_done - mul_start).count();
+    // std::cout << "Scale operation (x0.5): " << mul_ms << "ms" << std::endl;
+    // std::cout << "Scaled tensor: " << scaled->distribution_info() << std::endl;
+    std::cout << "\nScale operation (x0.5): " << mul_ms << "ms" << std::endl;
+    std::cout << "After scale: ";
+    for (size_t i = 0; i < std::min(size_t(10), scaled->total_elements()); ++i) {
+        std::cout << scaled->get_element(i) << " ";
+    }
+    std::cout << std::endl;
     
-    std::cout << "Scale operation (x0.5): " << mul_ms << "ms" << std::endl;
-    std::cout << "Scaled tensor: " << scaled->distribution_info() << std::endl;
-    
-    // Operation 3: Add scalar (shift embeddings)
+    // Operation 3: Add scalar (shift lengths)
     auto add_start = std::chrono::high_resolution_clock::now();
     auto shifted = scaled->add_scalar(1.0f);
     auto add_done = std::chrono::high_resolution_clock::now();
     auto add_ms = std::chrono::duration_cast<std::chrono::milliseconds>(add_done - add_start).count();
     
-    std::cout << "Shift operation (+1.0): " << add_ms << "ms" << std::endl;
+    std::cout << "\nAdd operation (+1.0): " << add_ms << "ms" << std::endl;
+    std::cout << "After add: ";
+    for (size_t i = 0; i < std::min(size_t(10), shifted->total_elements()); ++i) {
+        std::cout << shifted->get_element(i) << " ";
+    }
+    std::cout << std::endl;
     
     // Verify operations
     auto verify_sum = shifted->sum();
     std::cout << "Final sum after operations: " << verify_sum->get_element(0) << std::endl;
     
-    // Print final shard timing report
-    std::cout << "\n" << ExecutionContextManager::format_shard_timings() << std::endl;
     
     // Print memory usage
     std::cout << "\n=== Memory Usage ===" << std::endl;

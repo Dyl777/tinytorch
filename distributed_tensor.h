@@ -888,9 +888,30 @@ private:
       f.get();
   }
 
+public:
   // Distribute data from a vector to shards (used by parquet loader)
-  // This clears existing shards and redistributes
+  // Respects execution mode: GPU_SATURATE, GPU_FIRST, or default even distribution
   void distribute_from_vector(const std::vector<T> &data) {
+    // Check current execution mode
+    ExecutionMode mode = ExecutionContextManager::instance().global_mode;
+    
+    // If GPU_SATURATE or GPU_FIRST mode, use the appropriate shard initialization
+    // which handles GPU prioritization and CPU spillover correctly
+    if (mode == ExecutionMode::GPU_SATURATE) {
+      _shards.clear();
+      _total_elements = data.size();
+      // GPU_SATURATE will be used for shard creation in create_tensor_on_device calls
+      // Build shards based on GPU capacity first, then spill to CPU
+      initialize_shards_gpu_saturate_data(data);
+      return;
+    } else if (mode == ExecutionMode::GPU_FIRST) {
+      _shards.clear();
+      _total_elements = data.size();
+      initialize_shards_gpu_first_data(data);
+      return;
+    }
+    
+    // Default: even distribution across all devices
     _shards.clear();
 
     auto devices = _device_pool.devices();
@@ -918,6 +939,163 @@ private:
 
     _total_elements = data.size();
   }
+  
+private:
+  // Initialize shards for GPU_SATURATE mode with data from vector
+  void initialize_shards_gpu_saturate_data(const std::vector<T> &data) {
+    auto devices = _device_pool.devices();
+    
+    // Separate GPU and CPU devices
+    std::vector<DeviceInfo> gpu_devices;
+    std::vector<DeviceInfo> cpu_devices;
+    for (const auto &d : devices) {
+      if (d.backend == BackendType::CUDA || d.backend == BackendType::OPENCL ||
+          d.backend == BackendType::OPENGL) {
+        gpu_devices.push_back(d);
+      } else {
+        cpu_devices.push_back(d);
+      }
+    }
+    
+    // Deduplicate GPUs by physical device
+    std::unordered_map<std::string, DeviceInfo> best_per_physical;
+    for (const auto &d : gpu_devices) {
+      auto key = normalize_device_name(d.name);
+      auto it = best_per_physical.find(key);
+      if (it == best_per_physical.end()) {
+        best_per_physical.emplace(key, d);
+      } else {
+        int p_new = backend_priority(d.backend);
+        int p_old = backend_priority(it->second.backend);
+        if (p_new > p_old) {
+          it->second = d;
+        } else if (p_new == p_old && d.compute_score > it->second.compute_score) {
+          it->second = d;
+        }
+      }
+    }
+    
+    gpu_devices.clear();
+    for (const auto &kv : best_per_physical) {
+      gpu_devices.push_back(kv.second);
+    }
+    
+    // Sort by priority
+    std::sort(gpu_devices.begin(), gpu_devices.end(),
+              [](const DeviceInfo &a, const DeviceInfo &b) {
+                if (backend_priority(a.backend) != backend_priority(b.backend))
+                  return backend_priority(a.backend) > backend_priority(b.backend);
+                return a.compute_score > b.compute_score;
+              });
+    
+    std::size_t remaining = data.size();
+    std::size_t offset = 0;
+    int shard_id = 0;
+    
+    // Allocate to GPUs first
+    for (size_t i = 0; i < gpu_devices.size() && remaining > 0; ++i) {
+      const auto &dev = gpu_devices[i];
+      
+      // Calculate capacity
+      double vram_pct = get_max_gpu_memory_percentage();
+      double cap_bytes_d = static_cast<double>(dev.available_memory_bytes) * (vram_pct / 100.0);
+      std::size_t cap_elems = static_cast<std::size_t>(cap_bytes_d) / sizeof(T);
+      
+      std::size_t count = std::min(remaining, cap_elems);
+      if (count == 0) continue;
+      
+      auto tensor = create_tensor_on_device(dev, count);
+      tensor->upload_from_host(data.data() + offset, count);
+      _shards.emplace_back(std::move(tensor), dev, offset, count, shard_id++, _is_leaf);
+      
+      offset += count;
+      remaining -= count;
+    }
+    
+    // Spill remaining to CPU
+    if (remaining > 0) {
+      if (cpu_devices.empty()) {
+        cpu_devices = _device_pool.cpu_devices();
+      }
+      if (cpu_devices.empty()) {
+        cpu_devices.push_back(_device_pool.devices()[0]);
+      }
+      
+      DeviceInfo cpu_pick = cpu_devices[0];
+      for (const auto &c : cpu_devices) {
+        if (c.backend == BackendType::CPU_MMAP) {
+          cpu_pick = c;
+          break;
+        }
+      }
+      
+      auto cpu_tensor = create_tensor_on_device(cpu_pick, remaining);
+      cpu_tensor->upload_from_host(data.data() + offset, remaining);
+      _shards.emplace_back(std::move(cpu_tensor), cpu_pick, offset, remaining, shard_id++, _is_leaf);
+    }
+  }
+  
+  // Initialize shards for GPU_FIRST mode with data from vector
+  void initialize_shards_gpu_first_data(const std::vector<T> &data) {
+    auto devices = _device_pool.devices();
+    
+    std::vector<DeviceInfo> gpu_devices;
+    std::vector<DeviceInfo> cpu_devices;
+    for (const auto &d : devices) {
+      if (d.backend == BackendType::CUDA || d.backend == BackendType::OPENCL ||
+          d.backend == BackendType::OPENGL) {
+        gpu_devices.push_back(d);
+      } else {
+        cpu_devices.push_back(d);
+      }
+    }
+    
+    std::size_t remaining = data.size();
+    std::size_t offset = 0;
+    int shard_id = 0;
+    
+    // Allocate to all GPUs first
+    for (size_t i = 0; i < gpu_devices.size() && remaining > 0; ++i) {
+      const auto &dev = gpu_devices[i];
+      double vram_pct = get_max_gpu_memory_percentage();
+      double cap_bytes_d = static_cast<double>(dev.available_memory_bytes) * (vram_pct / 100.0);
+      std::size_t cap_elems = static_cast<std::size_t>(cap_bytes_d) / sizeof(T);
+      
+      std::size_t count = std::min(remaining, cap_elems);
+      if (count == 0) continue;
+      
+      auto tensor = create_tensor_on_device(dev, count);
+      tensor->upload_from_host(data.data() + offset, count);
+      _shards.emplace_back(std::move(tensor), dev, offset, count, shard_id++, _is_leaf);
+      
+      offset += count;
+      remaining -= count;
+    }
+    
+    // Spill to CPU
+    if (remaining > 0) {
+      if (cpu_devices.empty()) {
+        cpu_devices = _device_pool.cpu_devices();
+      }
+      if (cpu_devices.empty()) {
+        cpu_devices.push_back(_device_pool.devices()[0]);
+      }
+      
+      DeviceInfo cpu_pick = cpu_devices[0];
+      for (const auto &c : cpu_devices) {
+        if (c.backend == BackendType::CPU_MMAP) {
+          cpu_pick = c;
+          break;
+        }
+      }
+      
+      auto cpu_tensor = create_tensor_on_device(cpu_pick, remaining);
+      cpu_tensor->upload_from_host(data.data() + offset, remaining);
+      _shards.emplace_back(std::move(cpu_tensor), cpu_pick, offset, remaining, shard_id++, _is_leaf);
+    }
+  }
+  
+public:
 
   // ========================================================================
   // Internal: Tree-reduce sum across shards (never gathers all data)
